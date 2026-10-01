@@ -55,9 +55,18 @@ Effects run for 1,000 ms and are replaced at 50 ms intervals, without awaiting c
 
 All included vendor model scripts register input report `3`, output report `2`, report size `64` including the ID. Native send worker `10068ab7–10068b20` prepends the output report ID and copies raw queued command bytes; `10068c3a–10068c45` calls `hid_write`. Native receive `10068a17–10068a31` strips one report ID byte. WebHID separates the report ID already, so payloads are exactly **63 bytes**, padded with zero. The app validates both descriptor lengths before opening a protocol session and spaces output reports by 30 ms, matching the vendor's configured write delay.
 
+Live Linux inspection on October 1, 2026 corrected the assumption that the registration's input ID describes every receiver. The `20bc:507f` **BEITONG A1N3 BFM DONGLE** exposes two HID interfaces: interface 0 has mouse/gamepad input reports (gamepad ID `3`, 10-byte payload, no output report), while interface 1 has usage page `00ff`, usage `03`, and **input `2` / output `2`, 63-byte payloads**. Its configuration descriptor is:
+
+```text
+05 ff 09 03 a1 01 85 02 19 01 29 02 15 00 26 ff 00 75 08 95 3f
+81 02 19 01 29 02 15 00 26 ff 00 75 08 95 3f 91 02 c0
+```
+
+Real base-info, keymap, and advanced GET replies arrived on report `2`. Receiver report selection accepts the full-size input `3` or `2` and uses that selected ID when receiving; other models retain input `3`. The receiver chooser filters usage page `00ff` to exclude the separate gamepad interface. An incompatible descriptor error includes the discovered report IDs and sizes. The [WebHID specification](https://wicg.github.io/webhid/index.html#hidreportinfo-dictionary) defines report metadata separately from the report ID byte.
+
 The native worker has optional byte substitution at `10068c02–10068c38`; enabled device families are not inferred from an unknown descriptor. The included identities are tested against the unencoded parser and fail closed when no valid read response arrives.
 
-`joyconn.js:183–295` supplies a 16-bit little-endian request ID followed by command and parameters. ID `0` is unsolicited/no-callback, ID `8` is skipped, and IDs wrap before `ffff`. Replies echo the request ID. Browser code also matches the command opcode, validates sizes, and ignores dongle packets without a `90` relay marker. There is no application-level CRC in this command path.
+`joyconn.js:183–295` supplies a 16-bit little-endian request ID followed by command and parameters. ID `0` is unsolicited/no-callback, ID `8` is skipped, and IDs wrap before `ffff`. Configuration replies echo the request ID. Base info is an exception: `axl2pro_ns_gzt3.js:740–743` requests it without a callback, and live firmware sends `90 00 00 10 ...` even when requested with a nonzero ID. A fresh ID-zero base-info notification may satisfy a pending base-info read; it is never cached for later slot checks. All other commands, including every write/save acknowledgement, retain request-ID matching. Browser code also matches the command opcode, validates sizes, and ignores dongle packets without a `90` relay marker. There is no application-level CRC in this command path.
 
 ## Keymap commands
 
@@ -67,11 +76,30 @@ The native worker has optional byte substitution at `10068c02–10068c38`; enabl
 |---|---|---|
 | Base info | `10` | `10 slot minorFW dongleFW battery ...` |
 | Read keymap | `22 00 size slot` | `22 00 size slot map[size]` |
-| Write keymap | `23 00 size slot map[size]` | `23 00 size slot map[size]` |
+| Write keymap | `23 00 size slot map[size]` | `22 00 size slot map[size]` on observed BFM firmware; `23` echo also accepted |
 | Persist | `f1 slot` or `a0 slot` | matching ID/opcode (vendor checks only reply presence) |
 | Keepalive | `00` with request ID zero | ignored |
 
 For PID `507f`, prepend `90` to the whole frame; input responses must also carry `90`. No firmware updates, factory resets, response-curve editing, sensor configuration, calibration, or slot-selection commands are implemented.
+
+Live write validation on October 1, 2026 found that SET_KEYMAP (`23`) replies with GET_KEYMAP opcode `22`, retaining the write's request ID and full map. For example, request `90 03 40 23 00 21 01 ...` returned `90 03 40 22 00 21 01 ...`. Previously this valid reply was discarded, causing a timeout after the live mapping had already been written. The vendor's `setKeyMap` callback (`axl2pro_ns_gzt3.js:790–805`) passes the response to the same map parser as GET and does not require opcode `23`. The browser now accepts this specific `23` → `22` response alongside a `23` echo, still requiring the write's request ID, map size, slot and byte-for-byte contents before save. A full `Controller.apply({})` hardware probe rewrote the existing mapping unchanged, received save acknowledgement `a0 01 01`, and verified a fresh keymap read. Power-cycle persistence was not tested.
+
+## Live configuration input
+
+Switching the receiver out of Xbox mode removes or changes its standard Gamepad API entry. The configuration interface instead emits unsolicited `11` input notifications. The supplied `axl2pro_ns_gzt3.js:214–240,519–538` parses these separately from command replies; the same layout appears in the other supported model scripts. After stripping the HID report ID and optional `90` relay prefix, the packet contains:
+
+| Byte offset | Value |
+|---|---|
+| 0–1 | Request ID (zero for observed notifications) |
+| 2 | Opcode `11` |
+| 3 | `0` mapped input, `1` raw physical input |
+| 4–7 | LX, LY, RX, RY; center `80` |
+| 8–9 | LT, RT pressure, `0`–`ff` |
+| 10–13 | Little-endian button bitmask |
+
+Ordered physical tests on October 1, 2026 confirmed right M1 = bit 20 and left M2 = bit 19, contrary to the vendor script's backkey constant names. Left-stick right produced X = `00`; up produced Y = `00`. LT and RT independently reached `ff`, with digital flags at bits 17 and 18. Axes are normalized to the existing tester coordinates; trigger pressure and digital button state are kept separate.
+
+The controller stores the latest input state without putting notifications into the command-response queue. Once a raw packet is seen, interleaved mapped packets cannot replace it: this keeps the diagram on the physically pressed backkey instead of alternating with its remapped LS/RS output. Reads, writes and save acknowledgements still follow their existing correlation rules. No additional input-polling or subscription command is sent. The browser selects this input source after opening the configuration HID; its name comes from the device. The existing animation-frame renderer updates the highlights, stick caps and trigger sizes. Closing/disconnecting clears the state. The user confirmed that button detection works in the browser after this change.
 
 ## Advanced settings
 
@@ -95,7 +123,7 @@ The source entry order is:
 
 `A B X Y Back Start Turbo Shift Home LB RB LS RS Up Down Left Right LT RT M2 M1 [12 sensor entries]`.
 
-**M2 is index 19; M1 is index 20.** Vendor event bit names use the opposite physical M convention, so keymap order must come from `KEY_DEF`, not `KEY_POS_*`.
+**M2 (left) is index 19; M1 (right) is index 20.** This matches the vendor script's `KEY_DEF` and the user's physical test. Swapping the diagram labels must not swap these wire offsets: an earlier edit did both, causing Classic to produce left → RS and right → LS. Classic must write `11` (LS click) at index 19 and `12` (RS click) at index 20; Soul writes `1` (B) and `12` respectively. Vendor event-bit constants use the opposite name order and are not keymap offsets.
 
 Targets `0–18` correspond to the first 19 entries above. Targets `19–26` are left-stick directions clockwise from up; `27–34` are right-stick directions. Special values: `ff` default, `fd` disabled, `fe` macro. The app keeps existing macro bytes unless that source is explicitly edited; it does not create or edit macro definitions. All trailing sensor values are copied from the fresh read before applying edits.
 

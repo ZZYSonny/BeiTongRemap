@@ -2,6 +2,8 @@
 // See docs/protocol.md for source locations and evidence boundaries.
 export const SOURCE_KEYS = [
   'A', 'B', 'X', 'Y', 'Back', 'Start', 'Turbo', 'Shift', 'Home',
+  // Wire order: byte 19 is the left backkey (M2), byte 20 the right (M1).
+  // Diagram positions and preset targets must not change these device offsets.
   'LB', 'RB', 'LS', 'RS', 'Up', 'Down', 'Left', 'Right', 'LT', 'RT', 'M2', 'M1',
 ] as const;
 export type SourceKey = typeof SOURCE_KEYS[number];

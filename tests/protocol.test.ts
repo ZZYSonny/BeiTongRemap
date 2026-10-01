@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT, DISABLED, MODELS, SOURCE_KEYS, frame, modelFor, parseMap, patchMap, readMapParameters } from '../src/protocol.ts';
-import { validateProfile } from '../src/profiles.ts';
+import { PRESETS, validateProfile } from '../src/profiles.ts';
 import { RECEIVER_SEQUENCE, isXboxReceiver, switchReceiver } from '../src/receiver.ts';
 
 test('vendor commands have little-endian request IDs and a separate HID report ID', () => {
@@ -20,12 +20,13 @@ test('variants select their own map size and persist command; unknown hardware f
   assert.throws(() => modelFor(0x045e, 0x028e));
   assert.throws(() => modelFor(0x20bc, 0x511b)); // Ambiguous firmware family, deliberately excluded.
 });
-test('button patches preserve existing macros, sensor mappings, and reversed M positions', () => {
+test('button patches use corrected M1/M2 positions and preserve macros and sensor mappings', () => {
   const model = MODELS[3];
   const original = Array.from({ length: 33 }, (_, i) => i + 100);
   original[9] = 0xfe;
   const result = patchMap(original, model, { M1: 0, M2: 1, A: DISABLED });
   assert.equal(SOURCE_KEYS[19], 'M2');
+  assert.equal(SOURCE_KEYS[20], 'M1');
   assert.equal(result[19], 1);
   assert.equal(result[20], 0);
   assert.equal(result[9], 0xfe);
@@ -34,6 +35,19 @@ test('button patches preserve existing macros, sensor mappings, and reversed M p
   assert.equal(original[20], 120);
   assert.throws(() => patchMap([], model, { A: 1 }));
   assert.throws(() => patchMap(original, model, { A: 0xfe }));
+});
+test('backkey presets encode the physical left and right buttons in vendor wire order', () => {
+  // Physical test: index 19 drives the left backkey; index 20 drives the right.
+  // Verify the transmitted bytes, independently of the UI's M1/M2 labels.
+  for (const model of MODELS) {
+    for (const [preset, leftTarget] of [['classic', 11], ['soul', 1]] as const) {
+      const map = patchMap(Array(model.keymapSize).fill(DEFAULT), model, PRESETS[preset]);
+      const packet = frame(1, 0x23, [...readMapParameters(model, 1), ...map], model.relay);
+      const mapOffset = (model.relay ? 1 : 0) + 6;
+      assert.equal(packet[mapOffset + 19], leftTarget, `${preset}: left backkey`);
+      assert.equal(packet[mapOffset + 20], 12, `${preset}: right backkey is RS click`);
+    }
+  }
 });
 test('wrong slot, opcode, length, or block cannot be accepted as a readback', () => {
   const model = MODELS[0];

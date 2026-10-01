@@ -2,6 +2,8 @@ import { frame, modelFor, parseMap, patchMap, readMapParameters, validateSlot } 
 import type { Model, SourceKey } from './protocol.ts';
 import { BLOCKS, BLOCK_COMMANDS, copyBlocks, parseSettings, patchSettings, sameBytes } from './advanced.ts';
 import type { SettingsBlocks, SettingsEdits } from './advanced.ts';
+import { parseInput } from './input.ts';
+import type { ControllerInput } from './input.ts';
 
 export interface Snapshot { slot: number; map: number[]; model: Model }
 export interface AdvancedSnapshot extends Snapshot { blocks: SettingsBlocks }
@@ -17,19 +19,30 @@ export class Controller {
   private advancedSnapshot?: AdvancedSnapshot;
   private lastWrite = -Infinity;
   private writeQueue: Promise<void> = Promise.resolve();
+  private inputReportId = 3;
+  private inputState?: ControllerInput;
+  get input(): ControllerInput | undefined { return this.inputState; }
   constructor(readonly device: HIDDevice, private log: (message: string) => void = () => {}) {
     this.model = modelFor(device.vendorId, device.productId);
   }
   async open(): Promise<Snapshot> {
     if (!this.device.opened) await this.device.open();
     const reports = this.device.collections.flatMap(function flatten(c): HIDCollectionInfo[] { return [c, ...(c.children ?? []).flatMap(flatten)]; });
-    const output = reports.flatMap(c => c.outputReports ?? []).find(r => r.reportId === 2);
-    const input = reports.flatMap(c => c.inputReports ?? []).find(r => r.reportId === 3);
     const size = (report: HIDReportInfo) => (report.items ?? []).reduce((n, item) => n + (item.reportSize ?? 0) * (item.reportCount ?? 0), 0);
-    if (!output || !input || size(output) !== 63 * 8 || size(input) !== 63 * 8) {
+    const outputs = reports.flatMap(c => c.outputReports ?? []);
+    const inputs = reports.flatMap(c => c.inputReports ?? []);
+    const output = outputs.find(r => r.reportId === 2 && size(r) === 63 * 8);
+    // A1N3 BFM receivers declare input 2, unlike the vendor app's input-3
+    // registration. Their separate gamepad interface also uses ID 3, but
+    // with a short input-only report. Match both ID and payload size.
+    const inputIds = this.model.relay ? [3, 2] : [3];
+    const input = inputIds.map(id => inputs.find(r => r.reportId === id && size(r) === 63 * 8)).find(Boolean);
+    if (!output || !input) {
       await this.device.close();
-      throw new Error('The HID reports do not match the vendor protocol (input 3 / output 2, 63 bytes each).');
+      const describe = (list: HIDReportInfo[]) => [...new Set(list.map(r => `${r.reportId}: ${size(r) / 8} bytes`))].join(', ') || 'none';
+      throw new Error(`The HID reports do not match the configuration protocol (input ${inputIds.join(' or ')} / output 2, 63 bytes each). Found input [${describe(inputs)}], output [${describe(outputs)}]. Choose the configuration HID interface.`);
     }
+    this.inputReportId = input.reportId!;
     this.device.addEventListener('inputreport', this.onInput);
     try {
       const snapshot = await this.read();
@@ -43,21 +56,39 @@ export class Controller {
     }
   }
   private onInput = (event: HIDInputReportEvent): void => {
-    if (event.reportId !== 3 || event.data.byteLength < 3) return;
+    if (event.reportId !== this.inputReportId || event.data.byteLength < 3) return;
     // WebHID excludes the report ID. Preserve DataView offsets.
     let bytes = new Uint8Array(event.data.buffer, event.data.byteOffset, event.data.byteLength).slice();
     if (this.model.relay) {
       if (bytes[0] !== 0x90 || bytes.length < 4) return;
       bytes = bytes.slice(1);
     }
+    if (bytes[2] === 0x11) {
+      const input = parseInput(bytes);
+      // Show physical controls once raw events are available; interleaved
+      // mapped events must not make a remapped backkey flicker onto LS/RS.
+      if (input && (input.kind === 'raw' || this.inputState?.kind !== 'raw')) this.inputState = input;
+      return;
+    }
     const id = bytes[0] | (bytes[1] << 8);
-    const request = this.pending.get(id);
-    if (!request || bytes[2] !== request.command) return;
+    // Base info is also an unsolicited notification (vendor getBaseInfo has
+    // no callback). Only use a fresh notification while a base-info read is
+    // pending; writes and all other reads still require their request ID.
+    const pendingId = id === 0 && bytes[2] === 0x10
+      ? [...this.pending].find(([, request]) => request.command === 0x10)?.[0]
+      : id;
+    if (pendingId === undefined) return;
+    const request = this.pending.get(pendingId);
+    // SET_KEYMAP may answer with GET_KEYMAP's opcode and the full resulting
+    // map (observed on A1N3 BFM). Keep the request ID mandatory and validate
+    // the slot, size and every echoed mapping byte in apply().
+    if (!request || (bytes[2] !== request.command && !(request.command === 0x23 && bytes[2] === 0x22))) return;
     clearTimeout(request.timer);
-    this.pending.delete(id);
+    this.pending.delete(pendingId);
     request.resolve(bytes);
   };
   private fail(error: Error): void {
+    this.inputState = undefined;
     this.snapshot = undefined;
     this.advancedSnapshot = undefined;
     for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(error); }
@@ -129,7 +160,7 @@ export class Controller {
       const next = patchMap(current, this.model, edits);
       wrote = true;
       const response = await this.command(0x23, [...readMapParameters(this.model, baseline.slot), ...next]);
-      const echo = parseMap(response, this.model, baseline.slot, 0x23);
+      const echo = parseMap(response, this.model, baseline.slot, response[2] === 0x22 ? 0x22 : 0x23);
       if (echo.some((b, i) => b !== next[i])) throw new Error('Controller write echo does not match the requested keymap.');
       if (await this.currentSlot() !== baseline.slot) throw new Error('The active slot changed during the write.');
       await this.command(this.model.saveCommand, [baseline.slot]);

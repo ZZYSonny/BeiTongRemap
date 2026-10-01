@@ -24,6 +24,7 @@ let liveInputAvailable = false;
 let receiverSwitchSent = false;
 let saveAcknowledged = false;
 let activeGamepadIndex: number | undefined;
+let inputSource: 'gamepad' | 'hid' = 'gamepad';
 let activeTab: 'remap' | 'advanced' = 'remap';
 let category: Category = 'general';
 let advancedSnapshot: AdvancedSnapshot | undefined;
@@ -55,7 +56,7 @@ $('#app').innerHTML = `
           <span class="mapping-arrow" aria-hidden="true">→</span>
           <div class="target-box"><label for="target">SEND THIS INSTEAD</label><select id="target"></select></div>
         </div>
-        <div class="preset-row" aria-label="Mapping presets"><button data-preset="swap">Swap AB / XY</button><button data-preset="action">Action backkey</button><button data-preset="shooter">Shooter backkey</button><button data-preset="classic" title="M1 → LS click · M2 → RS click">Classic Backkey</button><button data-preset="soul" title="M1 → B · M2 → RS click">Soul backkey</button><button id="reset">Default layout</button></div>
+        <div class="preset-row" aria-label="Mapping presets"><button data-preset="swap">Swap AB / XY</button><button data-preset="classic" title="M1 → RS click · M2 → LS click">Classic Backkey</button><button data-preset="soul" title="M1 → RS click · M2 → B">Soul backkey</button><button id="reset">Default layout</button></div>
         <div class="profile-tools"><label for="profile-name">Layout name<input id="profile-name" maxlength="64" value="My layout" /></label><div><button id="import">Import</button><button id="export">Export</button><input id="import-file" type="file" accept="application/json,.json" hidden /></div></div>
         <div class="apply-footer"><div><strong id="save-state">Configuration required</strong><p id="save-detail">Connect receiver, then choose HID.</p></div><button id="apply" class="primary" aria-describedby="save-detail" disabled>Apply to controller</button></div>
       </section>
@@ -74,7 +75,7 @@ const positions: Record<SourceKey, [number, number]> = {
   LT: [166, 52], RT: [434, 52], LB: [166, 104], RB: [434, 104],
   LS: [168, 177], RS: [361, 257], A: [430, 223], B: [470, 183], X: [390, 183], Y: [430, 143],
   Up: [215, 232], Down: [215, 288], Left: [187, 260], Right: [243, 260],
-  Back: [258, 172], Start: [342, 172], Home: [300, 133], Turbo: [265, 219], Shift: [307, 219], M1: [110, 365], M2: [490, 365],
+  Back: [258, 172], Start: [342, 172], Home: [300, 133], Turbo: [265, 219], Shift: [307, 219], M1: [490, 365], M2: [110, 365],
 };
 const glyphs: Partial<Record<SourceKey, string>> = { Up: '↑', Down: '↓', Left: '←', Right: '→', Back: '▱', Start: '☰', Home: 'b' };
 $('#controller-buttons').innerHTML = SOURCE_KEYS.map(key => {
@@ -335,7 +336,7 @@ $('#import-file').addEventListener('change', () => void run(async () => {
 $('#hid-connect').addEventListener('click', () => void run(async () => {
   if (!('hid' in navigator) || !isSecureContext) throw new Error('Use desktop Chrome or Edge on localhost or HTTPS for WebHID.');
   // Chooser stays directly attached to a user gesture.
-  const devices = await navigator.hid.requestDevice({ filters: MODELS.map(m => ({ vendorId: 0x20bc, productId: m.productId })) });
+  const devices = await navigator.hid.requestDevice({ filters: MODELS.map(m => ({ vendorId: 0x20bc, productId: m.productId, ...(m.relay ? { usagePage: 0xff } : {}) })) });
   if (!devices.length) {
     notice(receiverSwitchSent ? 'No configuration HID selected. Receiver switching is unconfirmed; your draft is unchanged.' : 'No configuration HID selected. Connect the receiver first; your draft is unchanged.', true);
     return;
@@ -354,6 +355,8 @@ $('#hid-connect').addEventListener('click', () => void run(async () => {
     throw error;
   }
   controller = next;
+  inputSource = 'hid';
+  gamepadSignature = undefined;
   $('#device-name').textContent = snapshot.model.name;
   $('#device-detail').textContent = `${devices[0].productName} · 20bc:${devices[0].productId.toString(16)} · slot ${snapshot.slot}`;
   notice('Controller settings read. Your draft is ready to apply.');
@@ -415,28 +418,35 @@ if ('hid' in navigator) navigator.hid.addEventListener('disconnect', event => {
 const inputSelector = document.createElement('select');
 inputSelector.id = 'gamepad-select'; inputSelector.setAttribute('aria-label', 'Live input controller');
 $('#gamepad-picker').append(inputSelector);
-inputSelector.addEventListener('change', () => { activeGamepadIndex = Number(inputSelector.value); });
+inputSelector.addEventListener('change', () => {
+  inputSource = inputSelector.value === 'hid' ? 'hid' : 'gamepad';
+  if (inputSource === 'gamepad') activeGamepadIndex = Number(inputSelector.value);
+});
 let gamepadSignature: string | undefined;
 function pollInput(): void {
   if (!document.hidden) {
     const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad): pad is Gamepad => Boolean(pad));
-    const signature = pads.map(p => `${p.index}:${p.id}`).join('|');
+    const signature = `${controller ? 'hid|' : ''}${pads.map(p => `${p.index}:${p.id}`).join('|')}`;
     if (signature !== gamepadSignature) {
       gamepadSignature = signature; inputSelector.replaceChildren();
-      if (!pads.length) inputSelector.add(new Option('No gamepad detected', ''));
+      if (controller) inputSelector.add(new Option(controller.device.productName || controller.model.name, 'hid'));
+      else if (inputSource === 'hid') inputSource = 'gamepad';
+      if (!pads.length && !controller) inputSelector.add(new Option('No gamepad detected', ''));
       for (const pad of pads) inputSelector.add(new Option(`${pad.index + 1}. ${pad.id}`, String(pad.index)));
       if (!pads.some(p => p.index === activeGamepadIndex)) activeGamepadIndex = pads.find(p => isXboxReceiver(p.id))?.index ?? pads[0]?.index;
-      inputSelector.value = activeGamepadIndex === undefined ? '' : String(activeGamepadIndex);
+      inputSelector.value = inputSource === 'hid' ? 'hid' : activeGamepadIndex === undefined ? '' : String(activeGamepadIndex);
     }
-    const pad = pads.find(p => p.index === activeGamepadIndex);
-    if (liveInputAvailable !== Boolean(pad)) { liveInputAvailable = Boolean(pad); render(); }
-    $('#input-status').textContent = pad ? pad.mapping === 'standard' ? 'Live gamepad input' : 'Nonstandard input · layout unverified' : 'Waiting for controller input';
+    const hid = inputSource === 'hid' ? controller?.input : undefined;
+    const pad = inputSource === 'gamepad' ? pads.find(p => p.index === activeGamepadIndex) : undefined;
+    if (liveInputAvailable !== Boolean(hid || pad)) { liveInputAvailable = Boolean(hid || pad); render(); }
+    $('#input-status').textContent = hid ? 'Live controller input' : controller && inputSource === 'hid' ? 'Press a button to test input' : pad ? pad.mapping === 'standard' ? 'Live gamepad input' : 'Nonstandard input · layout unverified' : 'Waiting for controller input';
     document.querySelectorAll<HTMLElement>('.pad-button').forEach(button => {
-      const index = gamepadKeys.indexOf(button.dataset.key as SourceKey);
-      button.classList.toggle('pressed', Boolean(pad?.mapping === 'standard' && index >= 0 && pad.buttons[index]?.pressed));
+      const key = button.dataset.key as SourceKey;
+      const index = gamepadKeys.indexOf(key);
+      button.classList.toggle('pressed', hid ? Boolean(hid.buttons[key]) : Boolean(pad?.mapping === 'standard' && index >= 0 && pad.buttons[index]?.pressed));
     });
     const axisValue = (index: number): number => {
-      const value = pad?.mapping === 'standard' ? pad.axes[index] : 0;
+      const value = hid ? hid.axes[index] : pad?.mapping === 'standard' ? pad.axes[index] : 0;
       return typeof value === 'number' && Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
     };
     for (const { cap, axis } of liveSticks) {
@@ -444,7 +454,7 @@ function pollInput(): void {
       if (cap.style.transform !== transform) cap.style.transform = transform;
     }
     for (const { button, index } of liveTriggers) {
-      const value = pad?.mapping === 'standard' ? pad.buttons[index]?.value : 0;
+      const value = hid ? hid.triggers[index - 6] : pad?.mapping === 'standard' ? pad.buttons[index]?.value : 0;
       const pressure = String(typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0);
       if (button.style.getPropertyValue('--trigger-pressure') !== pressure) button.style.setProperty('--trigger-pressure', pressure);
     }

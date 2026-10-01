@@ -49,9 +49,9 @@ test('editor maps buttons, persists drafts, imports profiles, and explains offli
   await expect(page.locator('#changes')).toHaveText('1 CHANGE');
   await page.reload();
   await expect(page.getByLabel('SEND THIS INSTEAD')).toHaveValue('1');
-  await page.getByRole('button', { name: 'Action backkey', exact: true }).click();
+  await page.getByRole('button', { name: 'Soul backkey', exact: true }).click();
   await page.getByRole('button', { name: 'Map M1', exact: true }).click();
-  await expect(page.getByLabel('SEND THIS INSTEAD')).toHaveValue('0');
+  await expect(page.getByLabel('SEND THIS INSTEAD')).toHaveValue('12');
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export', exact: false }).first().click();
   expect((await download).suggestedFilename()).toBe('beitong-layout.json');
@@ -285,7 +285,7 @@ for (const variant of [{ productId: 0x505b, slot: 1 }, { productId: 0x507f, slot
 
 test('receiver flow reads, applies, exports the saved layout, and handles unplugging', async ({ page }) => {
   await page.addInitScript(() => {
-    const state = { rumble: [] as number[][], commands: [] as number[], saved: false, denyOpen: true, map: Array(33).fill(255) as number[], blocks: {
+    const state = { rumble: [] as number[][], commands: [] as number[], saved: false, denyOpen: true, gamepadPresent: true, map: Array(33).fill(255) as number[], blocks: {
       base: [0, 7, 4, 2, 2, 2, 0, 10, 0, 10, 100, 5, 100, 5, 100, 0, 100, 0, 0, 0, 0],
       left: [10, 1, 255, 0, 30, 30, 110, 74, 128, 128, 0, 1],
       right: [12, 1, 255, 0, 30, 30, 110, 74, 128, 128, 1, 1],
@@ -297,10 +297,11 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
       vendorId = 0x20bc;
       productId = 0x507f;
       productName = 'Mock receiver';
-      collections = [{ children: [], outputReports: [{ reportId: 2, items: [{ reportSize: 8, reportCount: 63 }] }], inputReports: [{ reportId: 3, items: [{ reportSize: 8, reportCount: 63 }] }] }];
+      collections = [{ children: [], outputReports: [{ reportId: 2, items: [{ reportSize: 8, reportCount: 63 }] }], usagePage: 0xff, inputReports: [{ reportId: 2, items: [{ reportSize: 8, reportCount: 63 }] }] }];
       async open() {
         if (state.denyOpen) throw new DOMException('Failed to open the device.', 'NotAllowedError');
         this.opened = true;
+        state.gamepadPresent = false;
       }
       async close() { this.opened = false; }
       async sendReport(reportId: number, packet: Uint8Array) {
@@ -322,23 +323,24 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
           else parameters = [1, ...state.blocks[block]];
         }
         const response = new Uint8Array(63);
-        response.set([0x90, data[0], data[1], command, ...parameters]);
+        response.set([0x90, command === 0x10 ? 0 : data[0], command === 0x10 ? 0 : data[1], command === 0x23 ? 0x22 : command, ...parameters]);
         queueMicrotask(() => {
           const event = new Event('inputreport');
-          Object.assign(event, { reportId: 3, data: new DataView(response.buffer) });
+          Object.assign(event, { reportId: 2, data: new DataView(response.buffer) });
           this.dispatchEvent(event);
         });
       }
     }
     const receiver = new Receiver();
     let chooserAttempts = 0;
-    const hid = Object.assign(new EventTarget(), { requestDevice: async () => {
+    const hid = Object.assign(new EventTarget(), { requestDevice: async (options: HIDDeviceRequestOptions) => {
+      if (!options.filters.some(filter => filter.vendorId === 0x20bc && filter.productId === 0x507f && filter.usagePage === 0xff)) throw new Error('Chooser must target the BFM configuration collection');
       if (state.rumble.length !== 14) throw new Error('Receiver has not switched');
       if (++chooserAttempts === 1) return []; // Empty chooser / cancelled selection.
       return [receiver];
     } });
     Object.defineProperty(navigator, 'hid', { value: hid, configurable: true });
-    Object.defineProperty(navigator, 'getGamepads', { value: () => [{
+    Object.defineProperty(navigator, 'getGamepads', { value: () => state.gamepadPresent ? [{
       index: 0, id: 'BEITONG A1N3 XINPUT DONGLE (Vendor: 045e Product: 028e)', mapping: 'standard',
       buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })), axes: [0, 0, 0, 0],
       vibrationActuator: {
@@ -347,8 +349,14 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
           return 'preempted';
         }, reset: async () => 'complete',
       },
-    }], configurable: true });
-    Object.assign(window, { receiverTestState: state, unplugReceiver: () => {
+    }] : [], configurable: true });
+    Object.assign(window, { receiverTestState: state, emitReceiverInput: (parameters: number[]) => {
+      const response = new Uint8Array(63);
+      response.set([0x90, 0, 0, 0x11, ...parameters]);
+      const event = new Event('inputreport');
+      Object.assign(event, { reportId: 2, data: new DataView(response.buffer) });
+      receiver.dispatchEvent(event);
+    }, unplugReceiver: () => {
       const event = new Event('disconnect'); Object.assign(event, { device: receiver }); hid.dispatchEvent(event);
     } });
   });
@@ -377,6 +385,29 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
   await expect(page.locator('#connection-status')).toHaveText('Connected');
   await expect(page.getByLabel('SEND THIS INSTEAD')).toHaveValue('1');
   await expect(page.locator('#apply')).toBeEnabled();
+  await expect(page.getByLabel('Live input controller')).toHaveValue('hid');
+  expect(await page.evaluate(() => navigator.getGamepads())).toEqual([]);
+  const emitInput = async (parameters: number[]) => page.evaluate(parameters => {
+    (window as unknown as { emitReceiverInput: (parameters: number[]) => void }).emitReceiverInput(parameters);
+  }, parameters);
+  // Raw A + M1 + RT, independent sticks, partial LT and full RT.
+  await emitInput([1, 0, 0, 255, 255, 64, 255, 1, 0, 20, 0]);
+  await expect(page.locator('#input-status')).toHaveText('Live controller input');
+  for (const key of ['A', 'M1', 'RT']) await expect(page.locator(`.key-${key}`)).toHaveClass(/pressed/);
+  await expect(page.locator('.key-M2')).not.toHaveClass(/pressed/);
+  await expect.poll(() => page.locator('.key-LS .stick-cap').evaluate(el => (el as HTMLElement).style.transform)).toBe('translate(25%, -25%)');
+  await expect.poll(() => page.locator('.key-RS .stick-cap').evaluate(el => (el as HTMLElement).style.transform)).toBe('translate(-25%, 25%)');
+  await expect.poll(() => page.locator('.key-LT').evaluate(el => Number((el as HTMLElement).style.getPropertyValue('--trigger-pressure')))).toBeCloseTo(64 / 255);
+  await expect.poll(() => page.locator('.key-RT').evaluate(el => (el as HTMLElement).style.getPropertyValue('--trigger-pressure'))).toBe('1');
+  // Processed LS/RS packets must not replace physical button highlights.
+  await emitInput([0, 128, 128, 128, 128, 0, 0, 0, 24, 0, 0]);
+  await expect(page.locator('.key-M1')).toHaveClass(/pressed/);
+  await expect(page.locator('.key-RS')).not.toHaveClass(/pressed/);
+  await emitInput([1, 128, 128, 128, 128, 0, 0, 0, 0, 8, 0]);
+  await expect(page.locator('.key-M1')).not.toHaveClass(/pressed/);
+  await expect(page.locator('.key-M2')).toHaveClass(/pressed/);
+  await emitInput([1, 128, 128, 128, 128, 0, 0, 0, 0, 0, 0]);
+  await expect(page.locator('.pad-button.pressed')).toHaveCount(0);
   const backup = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Apply to controller' }).click();
   expect((await backup).suggestedFilename()).toBe('beitong-before-apply.json');
@@ -453,9 +484,14 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
   await page.getByRole('tab', { name: 'Remap', exact: true }).click();
   await expect(page.getByLabel('Physical button')).toHaveValue('B');
   await expect(page.getByLabel('SEND THIS INSTEAD')).toHaveValue('0');
-  await page.getByRole('button', { name: 'Action backkey', exact: true }).click();
+  await page.getByRole('button', { name: 'Soul backkey', exact: true }).click();
   await expect(page.locator('#save-state')).toHaveText('Editor draft');
+  await emitInput([1, 0, 0, 128, 128, 255, 0, 1, 0, 2, 0]);
+  await expect(page.locator('.key-A')).toHaveClass(/pressed/);
   await page.evaluate(() => (window as unknown as { unplugReceiver: () => void }).unplugReceiver());
-  await expect(page.locator('#connection-status')).toHaveText('Input only');
+  await expect(page.locator('#connection-status')).toHaveText('Not connected');
+  await expect(page.locator('.pad-button.pressed')).toHaveCount(0);
+  await expect.poll(() => page.locator('.key-LS .stick-cap').evaluate(el => (el as HTMLElement).style.transform)).toBe('translate(0%, 0%)');
+  await expect.poll(() => page.locator('.key-LT').evaluate(el => (el as HTMLElement).style.getPropertyValue('--trigger-pressure'))).toBe('0');
   await expect(page.locator('#apply')).toBeDisabled();
 });

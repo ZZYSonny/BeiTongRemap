@@ -15,8 +15,6 @@ export function validateProfile(value: unknown): Profile {
 export const PRESETS: Record<string, Profile['mappings']> = {
   default: Object.fromEntries(SOURCE_KEYS.map(key => [key, DEFAULT])),
   swap: { A: 1, B: 0, X: 3, Y: 2 },
-  action: { M1: 0, M2: 1 },
-  shooter: { M1: 0, M2: 2 },
-  classic: { M1: 11, M2: 12 },
-  soul: { M1: 1, M2: 12 },
+  classic: { M1: 12, M2: 11 },
+  soul: { M1: 12, M2: 1 },
 };
