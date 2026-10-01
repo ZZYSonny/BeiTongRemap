@@ -107,7 +107,7 @@ test.beforeEach(async ({ page }) => {
         playEffect: async (_type: string, params: { strongMagnitude: number; weakMagnitude: number }) => {
           state.rumble.push([Math.trunc(params.strongMagnitude * 65535) >> 8, Math.trunc(params.weakMagnitude * 65535) >> 8]);
           if (state.failRumble) throw new Error('Vibration unavailable');
-          if (state.rumble.length % 14 === 0 && state.publishOnSwitch) {
+          if (state.rumble.length % 18 === 0 && state.publishOnSwitch) {
             state.padPresent = false; state.hidPresent = true; window.autoConnectEvent();
           }
           return 'preempted';
@@ -168,11 +168,11 @@ test('disconnect stays visible in auto mode, requests XInput and turns automatic
   await page.waitForTimeout(200);
   const result = await page.evaluate(() => window.autoTest);
   expect(result.commands).toEqual([0x10, 0x22, 0x80, 0x80]);
-  expect(result.rumble.length).toBe(14);
+  expect(result.rumble.length).toBe(18);
   expect(result.closes).toBe(1);
   await toggle.check();
   await expect(page.locator('#connection-status')).toHaveText('Connected');
-  expect(await page.evaluate(() => window.autoTest.rumble.length)).toBe(28);
+  expect(await page.evaluate(() => window.autoTest.rumble.length)).toBe(36);
 });
 
 for (const failExitAt of [1, 2]) test(`XInput return succeeds when exit write ${failExitAt} rejects during re-enumeration`, async ({ page }) => {
@@ -226,7 +226,7 @@ test('first-time permission uses the explicit chooser and later reconnects autom
   await setState(page, { padPresent: true, pressed: true });
   await expect(page.locator('#connection-status')).toHaveText('Connected');
   expect(await page.evaluate(() => window.autoTest.choosers)).toBe(1);
-  expect(await page.evaluate(() => window.autoTest.rumble.length)).toBe(28);
+  expect(await page.evaluate(() => window.autoTest.rumble.length)).toBe(36);
 });
 
 test('auto opens the chooser after switching when browser activation remains available', async ({ page }) => {
@@ -266,7 +266,7 @@ test('disabling auto connect during switching stops the sequence and never opens
   await page.getByLabel('Auto connect', { exact: true }).uncheck();
   await expect(page.locator('#receiver-connect')).toBeEnabled();
   const result = await page.evaluate(() => window.autoTest);
-  expect(result.rumble.length).toBeLessThan(14);
+  expect(result.rumble.length).toBeLessThan(18);
   expect(result.resets).toBe(1);
   expect(result.opens).toBe(0);
 });

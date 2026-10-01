@@ -343,7 +343,7 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
     let chooserAttempts = 0;
     const hid = Object.assign(new EventTarget(), { requestDevice: async (options: HIDDeviceRequestOptions) => {
       if (!options.filters.some(filter => filter.vendorId === 0x20bc && filter.productId === 0x507f && filter.usagePage === 0xff)) throw new Error('Chooser must target the BFM configuration collection');
-      if (state.rumble.length !== 14) throw new Error('Receiver has not switched');
+      if (state.rumble.length !== 18) throw new Error('Receiver has not switched');
       if (++chooserAttempts === 1) return []; // Empty chooser / cancelled selection.
       return [receiver];
     } });

@@ -3,14 +3,24 @@
 // Addresses: 1000c84f, 1000cf56/70, 1000c9f0. Index 2 is a separate NS path.
 // High bytes of XINPUT_VIBRATION left/right WORDs, spaced 50 ms apart.
 export const RECEIVER_SEQUENCE = [
-  // ChangeX360(2), 1000cc9a–1000cce4, 1000cdd4–1000cde2.
-  [0, 0], [1, 6], [5, 3], [2, 4], [0, 0],
+  // ChangeX360(2), 1000cc9a–1000cce4. CMP mode,2 at 1000ccea
+  // jumps to the shared JNE at 1000cd4c; equality enters the completion tail.
+  [0, 0], [1, 6], [5, 3], [2, 4], [0, 0], [0, 0], [9, 0xf3], [0xc6, 5], [0, 0],
   // ChangeX360(3), 1000ccef–1000cdc4, 1000cdd4–1000cde2.
   [0, 0], [2, 1], [6, 5], [8, 3], [0, 0], [0, 0], [9, 0xf3], [0xc6, 5], [0, 0],
 ] as const;
 export interface RumbleActuator {
   playEffect(type: string, parameters: { duration: number; startDelay: number; strongMagnitude: number; weakMagnitude: number }): Promise<string>;
   reset(): Promise<string>;
+}
+export function receiverMagnitude(symbol: number): number {
+  if (!Number.isInteger(symbol) || symbol < 0 || symbol > 255) throw new Error('Invalid receiver symbol');
+  if (symbol === 0) return 0;
+  if (symbol === 255) return 1;
+  // Choose inside the intersection of the byte bins for
+  // floor(m * 255) and floor(m * 65535) >> 8. Also survives float32 and
+  // round(m * 255). Windows' actual downstream quantizer is still unknown.
+  return (symbol / 255 + ((symbol + 1) * 256) / 65535) / 2;
 }
 export function isXboxReceiver(id: string): boolean {
   return /(?:vendor:\s*045e.*product:\s*028e|045e[-:]028e|xbox\s*360|x-box\s*360|A1N3)/i.test(id);
@@ -60,10 +70,9 @@ export async function switchReceiver(actuator: RumbleActuator, delay = (ms: numb
       if (failure) throw failure;
       effects.push(actuator.playEffect('dual-rumble', {
         duration: 1000, startDelay: 0,
-        // Chromium truncates magnitude * 65535. Half a unit avoids a floating
-        // point underflow while retaining the vendor's zero low byte.
-        strongMagnitude: left ? ((left << 8) + 0.5) / 65535 : 0,
-        weakMagnitude: right ? ((right << 8) + 0.5) / 65535 : 0,
+        // Preserve command bytes across candidate downstream quantizers.
+        strongMagnitude: receiverMagnitude(left),
+        weakMagnitude: receiverMagnitude(right),
       }).then(result => { if (result !== 'complete' && result !== 'preempted') failure = new Error(`Browser vibration result: ${result}`); }, error => { failure = error; }));
       await delay(50);
     }

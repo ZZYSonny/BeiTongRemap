@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT, DISABLED, MODELS, SOURCE_KEYS, frame, modelFor, parseMap, patchMap, readMapParameters } from '../src/protocol.ts';
 import { PRESETS, validateProfile } from '../src/profiles.ts';
-import { RECEIVER_SEQUENCE, isXboxReceiver, switchReceiver } from '../src/receiver.ts';
+import { RECEIVER_SEQUENCE, isXboxReceiver, receiverMagnitude, switchReceiver } from '../src/receiver.ts';
 
 test('vendor commands have little-endian request IDs and a separate HID report ID', () => {
   const model = modelFor(0x20bc, 0x507e);
@@ -63,19 +63,44 @@ test('profile imports reject unsafe values and malformed documents', () => {
   assert.deepEqual(validateProfile({ version: 1, name: '<script>layout</script>', mappings: { A: 1 } }).mappings, { A: 1 });
   for (const value of [null, {}, { version: 1, name: 'test', mappings: [] }, { version: 1, name: 'test', mappings: { A: 1.5 } }, { version: 1, name: 'test', mappings: { A: 0xfe } }, { version: 1, name: 'test', mappings: { unknown: 0 } }]) assert.throws(() => validateProfile(value));
 });
-test('receiver handshake uses exact high bytes without inter-symbol reset', async () => {
+test('receiver handshake includes both native completion tails and exact high bytes without inter-symbol reset', async () => {
   const calls: string[] = [];
   const bytes: number[][] = [];
   await switchReceiver({
-    playEffect: async (type, p) => { assert.equal(type, 'dual-rumble'); assert.equal(p.duration, 1000); const left = Math.trunc(p.strongMagnitude * 65535); const right = Math.trunc(p.weakMagnitude * 65535); assert.equal(left & 255, 0); assert.equal(right & 255, 0); bytes.push([left >> 8, right >> 8]); calls.push('effect'); return 'preempted'; },
+    playEffect: async (type, p) => { assert.equal(type, 'dual-rumble'); assert.equal(p.duration, 1000); const left = Math.trunc(p.strongMagnitude * 65535); const right = Math.trunc(p.weakMagnitude * 65535); bytes.push([left >> 8, right >> 8]); calls.push('effect'); return 'preempted'; },
     reset: async () => { calls.push('reset'); return 'complete'; },
   }, async ms => { assert.equal(ms, 50); calls.push('delay'); });
   assert.deepEqual(bytes, RECEIVER_SEQUENCE);
   assert.deepEqual(bytes, [
-    [0, 0], [1, 6], [5, 3], [2, 4], [0, 0],
+    [0, 0], [1, 6], [5, 3], [2, 4], [0, 0], [0, 0], [9, 243], [198, 5], [0, 0],
     [0, 0], [2, 1], [6, 5], [8, 3], [0, 0], [0, 0], [9, 243], [198, 5], [0, 0],
   ]);
   assert.deepEqual(calls, [...RECEIVER_SEQUENCE.flatMap(() => ['effect', 'delay']), 'reset']);
   assert.equal(isXboxReceiver('Xbox 360 Controller (STANDARD GAMEPAD Vendor: 045e Product: 028e)'), true);
   assert.equal(isXboxReceiver('Unrelated gamepad'), false);
+});
+
+test('default encoding preserves every byte across candidate Windows and Linux conversions', async () => {
+  for (let symbol = 0; symbol <= 255; symbol++) {
+    const magnitude = receiverMagnitude(symbol);
+    for (const m of [magnitude, Math.fround(magnitude)]) {
+      assert.equal(Math.trunc(m * 65535) >> 8, symbol, `WORD high byte: ${symbol}`);
+      assert.equal(Math.floor(m * 255), symbol, `floor byte: ${symbol}`);
+      assert.equal(Math.round(m * 255), symbol, `rounded byte: ${symbol}`);
+    }
+  }
+  assert.equal(receiverMagnitude(0), 0);
+  assert.equal(receiverMagnitude(255), 1);
+  const received: number[][] = [];
+  let resets = 0;
+  await switchReceiver({
+    playEffect: async (_type, p) => {
+      assert.equal(p.duration, 1000); assert.equal(p.startDelay, 0);
+      received.push([Math.floor(p.strongMagnitude * 255), Math.floor(p.weakMagnitude * 255)]);
+      return 'preempted';
+    },
+    reset: async () => { resets++; return 'complete'; },
+  }, async ms => { assert.equal(ms, 50); });
+  assert.deepEqual(received, RECEIVER_SEQUENCE);
+  assert.equal(resets, 1);
 });

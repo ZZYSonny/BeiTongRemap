@@ -41,6 +41,8 @@ If access is missing, auto mode opens the device chooser when the browser still 
 
 **Compatibility is experimental.** The receiver path is grounded in the supplied September 22, 2026 Windows app, including its native mode-switch routine. Browser vibration timing/quantization and device firmware must be checked on real hardware. A completed vibration call does not prove receiver mode switching, and a readback does not prove persistence after power loss. This checkout has automated protocol/mock/browser validation; see [validation.md](docs/validation.md) for hardware status.
 
+**Windows and Linux connection:** the user confirmed successful receiver connection on both operating systems with the `byte-compatible` magnitude encoding. It is now the default, with no URL option required. This confirmation covers connection; it does not extend write, disconnect, or persistence validation. The exact Windows conversion remains unverified. See [protocol notes](docs/protocol.md#linuxwindows-magnitude-encoding).
+
 If vibration is unavailable or no configuration HID appears, the recent official Windows assistant can enter receiver configuration mode. The browser can then select its exposed HID, subject to OS access permissions. This is a setup fallback, not a running remapper. Pure XInput (`045e:028e`) is not a HID configuration device and cannot be opened with WebHID before switching.
 
 ## Linux HID permissions
