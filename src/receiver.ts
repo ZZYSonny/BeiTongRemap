@@ -15,6 +15,40 @@ export interface RumbleActuator {
 export function isXboxReceiver(id: string): boolean {
   return /(?:vendor:\s*045e.*product:\s*028e|045e[-:]028e|xbox\s*360|x-box\s*360|A1N3)/i.test(id);
 }
+export type ReceiverExit = 'xinput' | 'removed' | 'requested';
+
+/** Mode switching can remove HID before sendReport resolves, even on success. */
+export async function disconnectReceiver(
+  connection: { device: HIDDevice; disconnect(): Promise<void> },
+  hid: HID,
+  getGamepads: () => readonly (Gamepad | null)[],
+  waitMs = 1500,
+): Promise<ReceiverExit> {
+  const key = (pad: Gamepad) => `${pad.index}:${pad.id}`;
+  const initial = new Set(getGamepads().filter((pad): pad is Gamepad => Boolean(pad)).map(key));
+  let removed = false;
+  const onDisconnect = (event: HIDConnectionEvent) => { if (event.device === connection.device) removed = true; };
+  hid.addEventListener('disconnect', onDisconnect);
+  try {
+    let failure: unknown;
+    try { await connection.disconnect(); } catch (error) { failure = error; }
+    const deadline = performance.now() + waitMs;
+    do {
+      if (!removed) {
+        try { removed = !(await hid.getDevices()).includes(connection.device); }
+        catch { /* Lack of discovery permission cannot prove a mode change. */ }
+      }
+      if (removed && getGamepads().some(pad => pad && !initial.has(key(pad)) &&
+        isXboxReceiver(pad.id) && !/BFM|507f/i.test(pad.id))) return 'xinput';
+      if (performance.now() >= deadline) break;
+      await new Promise<void>(resolve => setTimeout(resolve, 50));
+    } while (true);
+    // HID removal alone may be an unplug. Never label it confirmed XInput.
+    if (removed) return 'removed';
+    if (failure) throw failure;
+    return 'requested';
+  } finally { hid.removeEventListener('disconnect', onDisconnect); }
+}
 export async function switchReceiver(actuator: RumbleActuator, delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)), signal?: AbortSignal): Promise<void> {
   // Keep each effect active until the next call replaces it. Awaiting playEffect
   // here would stretch the gaps between symbols and break the vendor sequence.

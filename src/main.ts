@@ -7,8 +7,8 @@ import { DEFAULT, DISABLED, MODELS, SOURCE_KEYS, TARGET_KEYS, mappingLabel } fro
 import type { SourceKey } from './protocol.ts';
 import { PRESETS, validateProfile } from './profiles.ts';
 import type { Profile } from './profiles.ts';
-import { isXboxReceiver, switchReceiver } from './receiver.ts';
-import type { RumbleActuator } from './receiver.ts';
+import { disconnectReceiver, isXboxReceiver, switchReceiver } from './receiver.ts';
+import type { ReceiverExit, RumbleActuator } from './receiver.ts';
 import { AutoConnectTrigger, waitForGrantedReceiver } from './autoconnect.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
@@ -27,6 +27,7 @@ let saveAcknowledged = false;
 let activeGamepadIndex: number | undefined;
 let inputSource: 'gamepad' | 'hid' = 'gamepad';
 let autoConnect = false;
+let autoPaused = false;
 let autoPhase: 'idle' | 'switching' | 'connecting' | 'permission' = 'idle';
 let autoSession: AbortController | undefined;
 let autoCheckGranted = false;
@@ -142,7 +143,7 @@ function render(): void {
     state = 'Working…'; detail = 'Waiting for the controller operation to finish.';
   } else if (!controller) {
     state = 'Configuration required';
-    detail = autoConnect && autoPhase !== 'permission' ? 'Press a controller button to connect.' : receiverSwitchSent ? 'Choose HID to read the onboard map.' : 'Connect receiver, then choose HID.';
+    detail = autoConnect && autoPaused ? 'Toggle Auto connect off and on to reconnect.' : autoConnect && autoPhase !== 'permission' ? 'Press a controller button to connect.' : receiverSwitchSent ? 'Choose HID to read the onboard map.' : 'Connect receiver, then choose HID.';
   } else if (!snapshot) {
     state = 'Read required'; detail = 'Click Read before applying changes.';
   } else if (saveAcknowledged && changed === 0) {
@@ -160,9 +161,9 @@ function render(): void {
   $<HTMLButtonElement>('#hid-connect').disabled = busy || Boolean(controller) || !('hid' in navigator) || !isSecureContext;
   $<HTMLInputElement>('#auto-connect').disabled = !('hid' in navigator) || !isSecureContext;
   $('#receiver-connect').hidden = autoConnect;
-  $('#disconnect').hidden = autoConnect;
+  $('#disconnect').hidden = false;
   $('#hid-connect').hidden = autoConnect && (autoPhase !== 'permission' || Boolean(controller));
-  $('.connection-actions').hidden = autoConnect && (autoPhase !== 'permission' || Boolean(controller));
+  $('.connection-actions').hidden = false;
   $('#receiver-connect').classList.toggle('primary', !controller && !receiverSwitchSent);
   $('#hid-connect').classList.toggle('primary', !controller && receiverSwitchSent);
   $<HTMLButtonElement>('#target').disabled = busy;
@@ -170,7 +171,7 @@ function render(): void {
   $<HTMLButtonElement>('#import').disabled = busy;
   $<HTMLSelectElement>('#source').disabled = busy;
   document.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach(button => { button.disabled = busy; });
-  $('#connection-status').textContent = controller ? snapshot ? 'Connected' : 'Read required' : autoConnect && (autoPhase === 'switching' || autoPhase === 'connecting') ? 'Connecting' : autoConnect && autoPhase === 'permission' ? 'Choose HID' : autoConnect ? 'Auto ready' : receiverSwitchSent ? 'Choose HID' : liveInputAvailable ? 'Input only' : 'Not connected';
+  $('#connection-status').textContent = controller ? snapshot ? 'Connected' : 'Read required' : autoConnect && autoPaused ? 'Auto paused' : autoConnect && (autoPhase === 'switching' || autoPhase === 'connecting') ? 'Connecting' : autoConnect && autoPhase === 'permission' ? 'Choose HID' : autoConnect ? 'Auto ready' : receiverSwitchSent ? 'Choose HID' : liveInputAvailable ? 'Input only' : 'Not connected';
   $('#connection-status').classList.toggle('connected', Boolean(controller && snapshot));
   $('#slot-label').textContent = snapshot ? `Onboard slot ${snapshot.slot}` : 'Onboard slot —';
   renderAdvanced();
@@ -411,7 +412,7 @@ $('#receiver-connect').addEventListener('click', () => void run(async () => {
 }));
 
 function startAutoConnection(pad?: Gamepad): void {
-  if (!autoConnect || busy || controller) return;
+  if (!autoConnect || autoPaused || busy || controller) return;
   const session = new AbortController();
   autoSession = session;
   autoCheckGranted = false;
@@ -457,6 +458,7 @@ function startAutoConnection(pad?: Gamepad): void {
 }
 $('#auto-connect').addEventListener('change', () => {
   autoConnect = $<HTMLInputElement>('#auto-connect').checked;
+  autoPaused = false;
   autoSession?.abort();
   autoPhase = 'idle';
   autoCheckGranted = autoConnect;
@@ -490,25 +492,42 @@ $('#apply').addEventListener('click', () => void run(async () => {
   saveAcknowledged = true;
   notice('Save acknowledged; readback matches. Power-cycle the controller and test the layout.');
 }));
-async function disconnect(): Promise<void> {
+async function disconnect(exitConfiguration = false): Promise<ReceiverExit | undefined> {
   autoSession?.abort();
+  if (exitConfiguration && autoConnect) autoPaused = true;
   autoTrigger.reset();
   autoPhase = 'idle';
   autoCheckGranted = false;
   const previous = controller; controller = undefined; snapshot = undefined;
   advancedSnapshot = undefined; advancedDraft = {}; advancedContext = ''; advancedSaved = false;
   receiverSwitchSent = false; saveAcknowledged = false;
-  if (previous) await previous.close();
   $('#device-name').textContent = 'Asura 2 Pro';
-  $('#device-detail').textContent = 'Reconnect the receiver to return to Xbox mode if needed.';
+  $('#device-detail').textContent = exitConfiguration ? 'Configuration disconnected.' : 'Reconnect the receiver to configure it again.';
   render();
+  if (previous) {
+    if (exitConfiguration && previous.model.relay) return disconnectReceiver(previous, navigator.hid, () => Array.from(navigator.getGamepads?.() ?? []));
+    if (exitConfiguration) await previous.disconnect();
+    else await previous.close();
+  }
 }
-$('#disconnect').addEventListener('click', () => void run(async () => { await disconnect(); notice('Disconnected. Reconnect the receiver to return to Xbox mode if needed.'); }));
+$('#disconnect').addEventListener('click', () => void run(async () => {
+  let result: ReceiverExit | undefined;
+  notice('Disconnecting configuration and checking for XInput…');
+  try { result = await disconnect(true); }
+  catch (error) {
+    notice(`Disconnected, but the receiver exit sequence did not finish: ${error instanceof Error ? error.message : String(error)} Reconnect the USB receiver if it remains in BFM.`, true);
+    return;
+  }
+  const message = result === 'xinput' ? 'Disconnected. XInput gamepad detected.'
+    : result === 'removed' ? 'Configuration interface disconnected. Press a controller button to check XInput.'
+    : result === 'requested' ? 'XInput return requested. Press a controller button to check game input.' : 'Disconnected.';
+  notice(`${message}${autoConnect ? ' Auto connect paused; toggle it off and on to reconnect.' : ''}`);
+}));
 if ('hid' in navigator) navigator.hid.addEventListener('disconnect', event => {
   if (controller?.device === event.device) void disconnect().then(() => notice('Controller disconnected. Reconnect and read settings before applying.', true));
 });
 if ('hid' in navigator) navigator.hid.addEventListener('connect', () => {
-  if (autoConnect && !controller && !autoSession) autoCheckGranted = true;
+  if (autoConnect && !autoPaused && !controller && !autoSession) autoCheckGranted = true;
 });
 
 const inputSelector = document.createElement('select');
@@ -522,7 +541,7 @@ let gamepadSignature: string | undefined;
 function pollInput(): void {
   if (!document.hidden) {
     const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad): pad is Gamepad => Boolean(pad));
-    if (autoConnect && !busy && !controller) {
+    if (autoConnect && !autoPaused && !busy && !controller) {
       const pressedReceiver = autoTrigger.poll(pads);
       if (pressedReceiver) startAutoConnection(pressedReceiver);
       else if (autoCheckGranted) startAutoConnection();

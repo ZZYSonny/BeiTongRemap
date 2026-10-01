@@ -53,6 +53,14 @@ The browser uses `Gamepad.vibrationActuator.playEffect('dual-rumble', ...)`. Chr
 
 Effects run for 1,000 ms and are replaced at 50 ms intervals, without awaiting completion (which would stretch the gaps between symbols). The final reset happens after the last zero symbol. Browser effect preemption, timer throttling, driver timing, and a receiver disconnect are material uncertainties. No arbitrary USB commands or invented vendor request codes are sent.
 
+## Leaving BFM configuration mode
+
+The supplied `third/gen3/gen3.js:54–59` calls `app_enableConfig(1)` twice in `exitConfigMode()`, after disabling automatic XInput switching. `axl2pro_ns_gzt3.js:678–685` encodes this as command `80`, parameters `03 01`; its receiver transport adds the `90` relay prefix. The explicit Disconnect action sends both packets with distinct nonzero request IDs, output report `2`, and the existing 30 ms write spacing, then closes WebHID. It does not wait for command replies because switching modes can remove the configuration interface. It does not save, reload, or reset mappings/settings.
+
+Only receiver model `20bc:507f` receives this sequence. Ordinary cleanup, unplug handling, cancelled opens, and non-receiver disconnects only close the connection. Explicit disconnect pauses automatic connection until the user toggles Auto connect off and on. The app observes HID removal and newly appearing Xbox gamepad identities for up to 1.5 seconds after closing. A mode switch can reject even the first `sendReport()` call, so a write error alone is not treated as exit failure. HID removal plus a new Xbox gamepad is reported as detected XInput; removal alone asks the user to check input, while a write failure with BFM still present remains an error. An Xbox gamepad that was already present cannot confirm the transition.
+
+Hardware follow-up: after the user saw a failed-write message on Disconnect, the user reported XInput, and live USB sysfs inspection independently showed `BEITONG A1N3 XINPUT DONGLE`, `045e:028e`, at port `5-6.4` (USB device 114). This confirms that the receiver had returned to XInput despite the write error. It does not establish which of the two writes caused removal.
+
 ## HID command transport
 
 All included vendor model scripts register input report `3`, output report `2`, report size `64` including the ID. Native send worker `10068ab7–10068b20` prepends the output report ID and copies raw queued command bytes; `10068c3a–10068c45` calls `hid_write`. Native receive `10068a17–10068a31` strips one report ID byte. WebHID separates the report ID already, so payloads are exactly **63 bytes**, padded with zero. The app validates both descriptor lengths before opening a protocol session and spaces output reports by 30 ms, matching the vendor's configured write delay.

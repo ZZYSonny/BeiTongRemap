@@ -11,6 +11,7 @@ class FakeHid extends EventTarget {
   collections = [{ children: [], outputReports: [{ reportId: 2, items: [{ reportSize: 8, reportCount: 63 }] }], inputReports: [{ reportId: 3, items: [{ reportSize: 8, reportCount: 63 }] }] }];
   map: number[] = Array(33).fill(DEFAULT);
   commands: number[] = [];
+  packets: number[][] = [];
   slot = 1;
   corrupt = false;
   saved = false;
@@ -21,6 +22,7 @@ class FakeHid extends EventTarget {
   async open() { this.opened = true; }
   async close() { this.opened = false; }
   async sendReport(reportId: number, packet: Uint8Array) {
+    this.packets.push(Array.from(packet));
     assert.equal(reportId, 2);
     assert.equal(packet[0], 0x90);
     const data = packet.slice(1);
@@ -59,6 +61,43 @@ class FakeHid extends EventTarget {
     });
   }
 }
+test('explicit receiver disconnect sends both vendor exit packets without saving mappings', async () => {
+  const device = new FakeHid();
+  const controller = new Controller(device as unknown as HIDDevice);
+  await controller.open();
+  await controller.disconnect();
+  assert.deepEqual(device.commands, [0x10, 0x22, 0x80, 0x80]);
+  assert.deepEqual(device.packets.slice(-2), [frame(3, 0x80, [3, 1], true), frame(4, 0x80, [3, 1], true)].map(packet => Array.from(packet)));
+  assert.equal(device.saved, false);
+  assert.equal(device.opened, false);
+  assert.equal(controller.input, undefined);
+  await controller.disconnect();
+  assert.equal(device.packets.length, 4);
+});
+test('a receiver disappearing during its exit sequence still closes without retrying', async () => {
+  const device = new FakeHid();
+  const controller = new Controller(device as unknown as HIDDevice);
+  await controller.open();
+  let exitWrites = 0;
+  device.sendReport = async () => {
+    exitWrites++;
+    if (exitWrites === 2) throw new Error('Device disconnected');
+  };
+  await assert.rejects(controller.disconnect(), /Device disconnected/);
+  assert.equal(exitWrites, 2);
+  assert.equal(device.opened, false);
+});
+test('cleanup and non-receiver disconnect do not send the receiver exit command', async () => {
+  const device = new FakeHid();
+  const controller = new Controller(device as unknown as HIDDevice);
+  await controller.open();
+  await controller.close();
+  assert.deepEqual(device.commands, [0x10, 0x22]);
+  const wired = new FakeHid(); wired.productId = 0x505b; wired.opened = true;
+  await new Controller(wired as unknown as HIDDevice).disconnect();
+  assert.deepEqual(wired.packets, []);
+  assert.equal(wired.opened, false);
+});
 test('receiver write reads first, checks conflicts, saves, and verifies a full map', async () => {
   const device = new FakeHid(); device.map[9] = 0xfe; device.map[21] = 17;
   const controller = new Controller(device as unknown as HIDDevice);

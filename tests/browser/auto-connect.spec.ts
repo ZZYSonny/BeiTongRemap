@@ -15,6 +15,10 @@ interface AutoTestState {
   userActive: boolean;
   denyChooser: boolean;
   cancelChooser: boolean;
+  exitRequests: number;
+  failExitAt: number;
+  exitSwitchOnFailure: boolean;
+  exitPadAppears: boolean;
   rumble: number[][];
   resets: number;
   opens: number;
@@ -38,6 +42,7 @@ test.beforeEach(async ({ page }) => {
       pressed: false, recognized: true, padPresent: true, hidPresent: false,
       authorized: true, publishOnSwitch: true, failRumble: false, delayOpen: false, denyOpen: false,
       userActive: false, denyChooser: false, cancelChooser: false,
+      exitRequests: 0, failExitAt: 0, exitSwitchOnFailure: true, exitPadAppears: true,
       rumble: [], resets: 0, opens: 0, closes: 0, choosers: 0, commands: [],
     };
     class Receiver extends EventTarget {
@@ -53,8 +58,19 @@ test.beforeEach(async ({ page }) => {
       async sendReport(_id: number, packet: Uint8Array) {
         const [relay, lo, hi, command] = packet;
         if (!lo && !hi) return;
-        if (relay !== 0x90 || ![0x10, 0x22].includes(command)) throw new Error('Auto connect must only read configuration');
+        if (relay !== 0x90 || ![0x10, 0x22, 0x80].includes(command)) throw new Error('Unexpected configuration command');
         state.commands.push(command);
+        if (command === 0x80) {
+          if (packet[4] !== 3 || packet[5] !== 1) throw new Error('Incorrect exit command');
+          state.exitRequests++;
+          const leaveBfm = () => { state.padPresent = state.exitPadAppears; state.pressed = true; window.autoUnplug(); };
+          if (state.exitRequests === state.failExitAt) {
+            if (state.exitSwitchOnFailure) setTimeout(leaveBfm, 100);
+            throw new DOMException('Failed to write the report.', 'NetworkError');
+          }
+          if (state.exitRequests === 2) leaveBfm();
+          return;
+        }
         const response = new Uint8Array(63);
         response.set([0x90, command === 0x10 ? 0 : lo, command === 0x10 ? 0 : hi, command,
           ...(command === 0x10 ? [1, 3, 70, 0, 0, 0] : [0, 33, 1, ...Array(33).fill(255)])]);
@@ -112,7 +128,9 @@ test('auto mode is off by default, keeps the three buttons, and only reacts to a
   await setState(page, { pressed: false, recognized: false });
   await toggle.check();
   await expect(page.locator('#connection-status')).toHaveText('Auto ready');
-  for (const id of ['receiver-connect', 'hid-connect', 'disconnect']) await expect(page.locator(`#${id}`)).toBeHidden();
+  for (const id of ['receiver-connect', 'hid-connect']) await expect(page.locator(`#${id}`)).toBeHidden();
+  await expect(page.locator('#disconnect')).toBeVisible();
+  await expect(page.locator('#disconnect')).toBeDisabled();
   await setState(page, { pressed: true });
   await expect(page.locator('.key-A')).toHaveClass(/pressed/);
   expect(await page.evaluate(() => window.autoTest.rumble)).toEqual([]);
@@ -128,6 +146,61 @@ test('auto mode is off by default, keeps the three buttons, and only reacts to a
   for (const id of ['receiver-connect', 'hid-connect', 'disconnect']) await expect(page.locator(`#${id}`)).toBeVisible();
   await page.reload();
   await expect(toggle).not.toBeChecked();
+});
+
+test('disconnect stays visible in auto mode, requests XInput and pauses automatic reconnect', async ({ page }) => {
+  const toggle = page.getByLabel('Auto connect', { exact: true });
+  await toggle.check();
+  await expect(page.locator('#connection-status')).toHaveText('Auto ready');
+  await setState(page, { pressed: true });
+  await expect(page.locator('#disconnect')).toBeEnabled();
+  await page.locator('#disconnect').click();
+  await expect(toggle).toBeChecked();
+  await expect(page.locator('#connection-status')).toHaveText('Auto paused');
+  await expect(page.locator('#notice')).toContainText('XInput gamepad detected');
+  await expect(page.locator('#disconnect')).toBeVisible();
+  await expect(page.locator('#disconnect')).toBeDisabled();
+  await expect(page.locator('.key-A')).toHaveClass(/pressed/);
+  await page.evaluate(() => window.autoConnectEvent());
+  await page.waitForTimeout(200);
+  const result = await page.evaluate(() => window.autoTest);
+  expect(result.commands).toEqual([0x10, 0x22, 0x80, 0x80]);
+  expect(result.rumble.length).toBe(14);
+  expect(result.closes).toBe(1);
+  await toggle.uncheck();
+  await toggle.check();
+  await expect(page.locator('#connection-status')).toHaveText('Connected');
+  expect(await page.evaluate(() => window.autoTest.rumble.length)).toBe(28);
+});
+
+for (const failExitAt of [1, 2]) test(`XInput return succeeds when exit write ${failExitAt} rejects during re-enumeration`, async ({ page }) => {
+  await setState(page, { hidPresent: true, padPresent: false, failExitAt });
+  await page.getByLabel('Auto connect', { exact: true }).check();
+  await expect(page.locator('#disconnect')).toBeEnabled();
+  await page.locator('#disconnect').click();
+  await expect(page.locator('#notice')).toContainText('XInput gamepad detected');
+  await expect(page.locator('#notice')).not.toHaveClass(/error/);
+  await expect(page.locator('#connection-status')).toHaveText('Auto paused');
+  expect(await page.evaluate(() => window.autoTest.exitRequests)).toBe(failExitAt);
+  expect(await page.evaluate(() => window.autoTest.closes)).toBe(1);
+});
+
+test('a failed exit with BFM still present remains an error', async ({ page }) => {
+  await setState(page, { hidPresent: true, padPresent: false, failExitAt: 1, exitSwitchOnFailure: false });
+  await page.getByLabel('Auto connect', { exact: true }).check();
+  await expect(page.locator('#disconnect')).toBeEnabled();
+  await page.locator('#disconnect').click();
+  await expect(page.locator('#notice')).toContainText('Failed to write the report');
+  await expect(page.locator('#notice')).toHaveClass(/error/);
+});
+
+test('HID removal without a new gamepad does not claim confirmed XInput', async ({ page }) => {
+  await setState(page, { hidPresent: true, padPresent: false, failExitAt: 1, exitPadAppears: false });
+  await page.getByLabel('Auto connect', { exact: true }).check();
+  await expect(page.locator('#disconnect')).toBeEnabled();
+  await page.locator('#disconnect').click();
+  await expect(page.locator('#notice')).toContainText('Configuration interface disconnected');
+  await expect(page.locator('#notice')).not.toHaveClass(/error/);
 });
 
 test('first-time permission uses the explicit chooser and later reconnects automatically', async ({ page }) => {

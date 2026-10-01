@@ -109,10 +109,7 @@ export class Controller {
   }
   private async command(command: number, parameters: number[] = []): Promise<Uint8Array> {
     if (this.closed || !this.device.opened) throw new Error('Controller disconnected. Reconnect and read its settings.');
-    this.sequence++;
-    if (this.sequence === 8) this.sequence++;
-    if (this.sequence >= 0xffff) this.sequence = 1;
-    const id = this.sequence;
+    const id = this.nextRequestId();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -123,6 +120,12 @@ export class Controller {
         clearTimeout(timer); this.pending.delete(id); reject(error);
       });
     });
+  }
+  private nextRequestId(): number {
+    this.sequence++;
+    if (this.sequence === 8) this.sequence++;
+    if (this.sequence >= 0xffff) this.sequence = 1;
+    return this.sequence;
   }
   private async currentSlot(): Promise<number> {
     const info = await this.command(0x10);
@@ -238,6 +241,22 @@ export class Controller {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(wrote ? `${reason} ${saved ? 'A save command was acknowledged; persistence is unverified.' : 'Live settings may have changed; permanent save was not confirmed.'} Read settings again.` : reason);
     } finally { this.busy = false; }
+  }
+  async disconnect(): Promise<void> {
+    if (this.busy) throw new Error('A controller operation is already in progress.');
+    this.busy = true;
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    try {
+      if (this.model.relay && !this.closed && this.device.opened) {
+        // third/gen3/gen3.js exitConfigMode calls enableConfig(1) twice.
+        // axl2pro_ns_gzt3.js encodes it as 80 03 01, through relay 90.
+        // Do not wait for replies: leaving BFM can remove this HID interface.
+        await this.send(frame(this.nextRequestId(), 0x80, [0x03, 0x01], true));
+        await this.send(frame(this.nextRequestId(), 0x80, [0x03, 0x01], true));
+      }
+    } finally {
+      try { await this.close(); } finally { this.busy = false; }
+    }
   }
   async close(): Promise<void> {
     this.closed = true;
