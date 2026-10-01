@@ -116,11 +116,14 @@ test.beforeEach(async ({ page }) => {
     }] : [] });
   });
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
 });
 
-test('auto mode is off by default, keeps the three buttons, and only reacts to a recognized press', async ({ page }) => {
+test('auto mode defaults on, can show the three manual buttons, and only reacts to a recognized press', async ({ page }) => {
   const toggle = page.getByLabel('Auto connect', { exact: true });
-  await expect(toggle).not.toBeChecked();
+  await page.reload();
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
   for (const id of ['receiver-connect', 'hid-connect', 'disconnect']) await expect(page.locator(`#${id}`)).toBeVisible();
   await setState(page, { pressed: true });
   await expect(page.locator('.key-A')).toHaveClass(/pressed/);
@@ -145,7 +148,7 @@ test('auto mode is off by default, keeps the three buttons, and only reacts to a
   await expect(page.locator('#connection-status')).toHaveText('Connected');
   for (const id of ['receiver-connect', 'hid-connect', 'disconnect']) await expect(page.locator(`#${id}`)).toBeVisible();
   await page.reload();
-  await expect(toggle).not.toBeChecked();
+  await expect(toggle).toBeChecked();
 });
 
 test('disconnect stays visible in auto mode, requests XInput and pauses automatic reconnect', async ({ page }) => {

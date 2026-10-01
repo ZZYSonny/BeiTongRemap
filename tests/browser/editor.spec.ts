@@ -42,12 +42,14 @@ async function expectControlsOnShell(page: Page): Promise<void> {
 test('editor maps buttons, persists drafts, imports profiles, and explains offline writes', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   await expect(page.getByRole('heading', { name: 'BEITONG REMAP' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Apply to controller' })).toBeDisabled();
   await page.getByRole('button', { name: 'Map A', exact: true }).click();
   await page.getByLabel('SEND THIS INSTEAD').selectOption('1');
   await expect(page.locator('#changes')).toHaveText('1 CHANGE');
   await page.reload();
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   await expect(page.getByLabel('SEND THIS INSTEAD')).toHaveValue('1');
   await page.getByRole('button', { name: 'Soul backkey', exact: true }).click();
   await page.getByRole('button', { name: 'Map M1', exact: true }).click();
@@ -66,6 +68,7 @@ test('editor maps buttons, persists drafts, imports profiles, and explains offli
 test('mobile editor fits the viewport and supports keyboard focus', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   await expect(page.getByRole('button', { name: 'Map A', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Map A', exact: true }).focus();
@@ -83,6 +86,7 @@ test('controller stick caps follow selected gamepad axes and reset when input di
     Object.defineProperty(navigator, 'getGamepads', { value: () => pads, configurable: true });
   });
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   const capOffsets = () => page.evaluate(() => ['LS', 'RS'].map(key => {
     const socket = document.querySelector(`.key-${key}`)!.getBoundingClientRect();
     const cap = document.querySelector(`.key-${key} .stick-cap`)!.getBoundingClientRect();
@@ -133,6 +137,7 @@ test('triggers grow independently with analog pressure and reset for unavailable
     Object.defineProperty(navigator, 'getGamepads', { value: () => pads, configurable: true });
   });
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   const sizes = () => page.evaluate(() => ['LT', 'RT'].map(key => {
     const rect = document.querySelector(`.key-${key}`)!.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
@@ -202,6 +207,7 @@ for (const viewport of [
   test(`editor requires no scrolling at ${viewport.width} × ${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.goto('/');
+    await page.getByLabel('Auto connect', { exact: true }).uncheck();
     await expectNoScrolling(page);
     await expectControlsOnShell(page);
     await page.getByRole('button', { name: 'Connect receiver' }).click();
@@ -228,6 +234,7 @@ for (const viewport of [
 
 test('receiver errors are actionable and do not pretend to connect', async ({ page }) => {
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   await page.getByRole('button', { name: 'Connect receiver' }).click();
   await expect(page.locator('#notice')).toContainText('Turn on the controller');
   await expect(page.locator('#connection-status')).toHaveText('Not connected');
@@ -261,6 +268,7 @@ for (const variant of [{ productId: 0x505b, slot: 1 }, { productId: 0x507f, slot
     }, variant);
     await page.setViewportSize({ width: 320, height: 568 });
     await page.goto('/');
+    await page.getByLabel('Auto connect', { exact: true }).uncheck();
     await page.getByRole('button', { name: 'Choose configuration HID' }).click();
     await expect(page.locator('#connection-status')).toHaveText('Connected');
     // Keyboard navigation selects the tab and triggers the same lazy read.
@@ -361,6 +369,7 @@ test('receiver flow reads, applies, exports the saved layout, and handles unplug
     } });
   });
   await page.goto('/');
+  await page.getByLabel('Auto connect', { exact: true }).uncheck();
   await expect(page.getByLabel('Live input controller')).toContainText('BEITONG');
   await expect(page.locator('#connection-status')).toHaveText('Input only');
   await page.getByRole('button', { name: 'Map A', exact: true }).click();
