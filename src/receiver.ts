@@ -15,13 +15,14 @@ export interface RumbleActuator {
 export function isXboxReceiver(id: string): boolean {
   return /(?:vendor:\s*045e.*product:\s*028e|045e[-:]028e|xbox\s*360|x-box\s*360|A1N3)/i.test(id);
 }
-export async function switchReceiver(actuator: RumbleActuator, delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))): Promise<void> {
+export async function switchReceiver(actuator: RumbleActuator, delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)), signal?: AbortSignal): Promise<void> {
   // Keep each effect active until the next call replaces it. Awaiting playEffect
   // here would stretch the gaps between symbols and break the vendor sequence.
   let failure: unknown;
   const effects: Promise<void>[] = [];
   try {
     for (const [left, right] of RECEIVER_SEQUENCE) {
+      signal?.throwIfAborted();
       if (failure) throw failure;
       effects.push(actuator.playEffect('dual-rumble', {
         duration: 1000, startDelay: 0,
@@ -32,6 +33,7 @@ export async function switchReceiver(actuator: RumbleActuator, delay = (ms: numb
       }).then(result => { if (result !== 'complete' && result !== 'preempted') failure = new Error(`Browser vibration result: ${result}`); }, error => { failure = error; }));
       await delay(50);
     }
+    signal?.throwIfAborted();
   } finally {
     try { await actuator.reset(); } catch { /* Receiver may disappear after switching. */ }
     await Promise.all(effects);

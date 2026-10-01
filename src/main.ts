@@ -9,6 +9,7 @@ import { PRESETS, validateProfile } from './profiles.ts';
 import type { Profile } from './profiles.ts';
 import { isXboxReceiver, switchReceiver } from './receiver.ts';
 import type { RumbleActuator } from './receiver.ts';
+import { AutoConnectTrigger, waitForGrantedReceiver } from './autoconnect.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -25,6 +26,11 @@ let receiverSwitchSent = false;
 let saveAcknowledged = false;
 let activeGamepadIndex: number | undefined;
 let inputSource: 'gamepad' | 'hid' = 'gamepad';
+let autoConnect = false;
+let autoPhase: 'idle' | 'switching' | 'connecting' | 'permission' = 'idle';
+let autoSession: AbortController | undefined;
+let autoCheckGranted = false;
+const autoTrigger = new AutoConnectTrigger();
 let activeTab: 'remap' | 'advanced' = 'remap';
 let category: Category = 'general';
 let advancedSnapshot: AdvancedSnapshot | undefined;
@@ -38,7 +44,7 @@ $('#app').innerHTML = `
   <header class="topbar"><h1>BEITONG <span>REMAP</span></h1><nav class="mode-tabs" role="tablist" aria-label="Configuration"><button id="tab-remap" role="tab" aria-selected="true" aria-controls="remap-view">Remap</button><button id="tab-advanced" role="tab" aria-selected="false" aria-controls="advanced-view" tabindex="-1">Advanced</button></nav><span id="connection-status" class="badge">Not connected</span></header>
   <main>
     <section class="connection panel" aria-label="Controller connection">
-      <div class="connection-copy"><h2 id="device-name">Asura 2 Pro</h2><p id="device-detail">Turn on the controller and press a button.</p></div>
+      <div class="connection-copy"><h2 id="device-name">Asura 2 Pro</h2><div class="connection-options"><label class="auto-connect"><input id="auto-connect" type="checkbox" />Auto connect</label><p id="device-detail">Turn on the controller and press a button.</p></div></div>
       <div id="gamepad-picker"></div>
       <div class="connection-actions"><button id="receiver-connect" class="primary">Connect receiver</button><button id="hid-connect" aria-label="Choose configuration HID">Choose HID</button><button id="disconnect" disabled>Disconnect</button></div>
     </section>
@@ -136,7 +142,7 @@ function render(): void {
     state = 'Working…'; detail = 'Waiting for the controller operation to finish.';
   } else if (!controller) {
     state = 'Configuration required';
-    detail = receiverSwitchSent ? 'Choose HID to read the onboard map.' : 'Connect receiver, then choose HID.';
+    detail = autoConnect && autoPhase !== 'permission' ? 'Press a controller button to connect.' : receiverSwitchSent ? 'Choose HID to read the onboard map.' : 'Connect receiver, then choose HID.';
   } else if (!snapshot) {
     state = 'Read required'; detail = 'Click Read before applying changes.';
   } else if (saveAcknowledged && changed === 0) {
@@ -152,6 +158,11 @@ function render(): void {
   $<HTMLButtonElement>('#disconnect').disabled = busy || !controller;
   $<HTMLButtonElement>('#receiver-connect').disabled = busy || Boolean(controller);
   $<HTMLButtonElement>('#hid-connect').disabled = busy || Boolean(controller) || !('hid' in navigator) || !isSecureContext;
+  $<HTMLInputElement>('#auto-connect').disabled = !('hid' in navigator) || !isSecureContext;
+  $('#receiver-connect').hidden = autoConnect;
+  $('#disconnect').hidden = autoConnect;
+  $('#hid-connect').hidden = autoConnect && (autoPhase !== 'permission' || Boolean(controller));
+  $('.connection-actions').hidden = autoConnect && (autoPhase !== 'permission' || Boolean(controller));
   $('#receiver-connect').classList.toggle('primary', !controller && !receiverSwitchSent);
   $('#hid-connect').classList.toggle('primary', !controller && receiverSwitchSent);
   $<HTMLButtonElement>('#target').disabled = busy;
@@ -159,7 +170,7 @@ function render(): void {
   $<HTMLButtonElement>('#import').disabled = busy;
   $<HTMLSelectElement>('#source').disabled = busy;
   document.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach(button => { button.disabled = busy; });
-  $('#connection-status').textContent = controller ? snapshot ? 'Connected' : 'Read required' : receiverSwitchSent ? 'Choose HID' : liveInputAvailable ? 'Input only' : 'Not connected';
+  $('#connection-status').textContent = controller ? snapshot ? 'Connected' : 'Read required' : autoConnect && (autoPhase === 'switching' || autoPhase === 'connecting') ? 'Connecting' : autoConnect && autoPhase === 'permission' ? 'Choose HID' : autoConnect ? 'Auto ready' : receiverSwitchSent ? 'Choose HID' : liveInputAvailable ? 'Input only' : 'Not connected';
   $('#connection-status').classList.toggle('connected', Boolean(controller && snapshot));
   $('#slot-label').textContent = snapshot ? `Onboard slot ${snapshot.slot}` : 'Onboard slot —';
   renderAdvanced();
@@ -333,55 +344,133 @@ $('#import-file').addEventListener('change', () => void run(async () => {
     stageDraft(); notice('Layout imported into the editor. Apply it to change the controller.');
   } finally { $<HTMLInputElement>('#import-file').value = ''; }
 }));
-$('#hid-connect').addEventListener('click', () => void run(async () => {
-  if (!('hid' in navigator) || !isSecureContext) throw new Error('Use desktop Chrome or Edge on localhost or HTTPS for WebHID.');
-  // Chooser stays directly attached to a user gesture.
-  const devices = await navigator.hid.requestDevice({ filters: MODELS.map(m => ({ vendorId: 0x20bc, productId: m.productId, ...(m.relay ? { usagePage: 0xff } : {}) })) });
-  if (!devices.length) {
-    notice(receiverSwitchSent ? 'No configuration HID selected. Receiver switching is unconfirmed; your draft is unchanged.' : 'No configuration HID selected. Connect the receiver first; your draft is unchanged.', true);
-    return;
-  }
-  const next = new Controller(devices[0]);
+async function openConfiguration(device: HIDDevice, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const next = new Controller(device);
+  let current: Snapshot;
   notice('Reading the controller’s active slot and existing keymap…');
   try {
-    snapshot = await next.open();
+    current = await next.open();
+    if (signal?.aborted) { await next.close(); signal.throwIfAborted(); }
   } catch (error) {
     if (error instanceof Error && /failed to open|permission denied|access denied/i.test(error.message)) {
-      const id = `20bc:${devices[0].productId.toString(16).padStart(4, '0')}`;
+      const id = `20bc:${device.productId.toString(16).padStart(4, '0')}`;
       throw new Error(/Linux/i.test(navigator.userAgent)
         ? `Cannot open ${id}. Linux may require the BeiTong HID permission rule; install it from README, then reconnect the receiver.`
         : `Cannot open ${id}. Reconnect the receiver and close other controller configuration apps, then try again.`);
     }
     throw error;
   }
+  snapshot = current;
   controller = next;
+  autoPhase = 'idle';
   inputSource = 'hid';
   gamepadSignature = undefined;
   $('#device-name').textContent = snapshot.model.name;
-  $('#device-detail').textContent = `${devices[0].productName} · 20bc:${devices[0].productId.toString(16)} · slot ${snapshot.slot}`;
+  $('#device-detail').textContent = `${device.productName} · 20bc:${device.productId.toString(16)} · slot ${snapshot.slot}`;
   notice('Controller settings read. Your draft is ready to apply.');
   if (activeTab === 'advanced') await readAdvanced();
-}));
-$('#receiver-connect').addEventListener('click', () => void run(async () => {
-  const pad = navigator.getGamepads?.()[activeGamepadIndex ?? -1];
-  if (!pad) throw new Error('Turn on the controller, press a button, and select it before connecting.');
+}
+async function chooseConfiguration(signal?: AbortSignal): Promise<boolean> {
+  if (!('hid' in navigator) || !isSecureContext) throw new Error('Use desktop Chrome or Edge on localhost or HTTPS for WebHID.');
+  signal?.throwIfAborted();
+  const filters = signal ? [{ vendorId: 0x20bc, productId: 0x507f, usagePage: 0xff }] : MODELS.map(m => ({ vendorId: 0x20bc, productId: m.productId, ...(m.relay ? { usagePage: 0xff } : {}) }));
+  const devices = await navigator.hid.requestDevice({ filters });
+  signal?.throwIfAborted();
+  if (!devices.length) {
+    notice(receiverSwitchSent ? 'No configuration HID selected. Receiver switching is unconfirmed; your draft is unchanged.' : 'No configuration HID selected. Connect the receiver first; your draft is unchanged.', true);
+    return false;
+  }
+  await openConfiguration(devices[0], signal);
+  return true;
+}
+$('#hid-connect').addEventListener('click', () => void run(async () => { await chooseConfiguration(); }));
+async function sendReceiverSwitch(pad: Gamepad, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (!isXboxReceiver(pad.id)) throw new Error('Select the BeiTong Xbox receiver before connecting.');
   const actuator = pad.vibrationActuator as unknown as RumbleActuator | undefined;
   if (!actuator?.playEffect || !actuator.reset) throw new Error('This browser does not expose receiver vibration. Use Chrome or Edge, or enter configuration mode with the recent official Windows assistant.');
   notice('Sending the vendor receiver configuration sequence…');
   try {
-    await switchReceiver(actuator);
+    await switchReceiver(actuator, undefined, signal);
   } catch (error) {
     // Switching can remove the XInput device while vibration effects settle.
     // A disappearance is still unconfirmed until its configuration map is read.
-    if (navigator.getGamepads?.()[pad.index]?.id === pad.id) throw error;
+    if (signal?.aborted || navigator.getGamepads?.()[pad.index]?.id === pad.id) throw error;
     receiverSwitchSent = true;
     notice('Receiver input disappeared during switching. Choose its configuration HID to confirm the connection.');
     return;
   }
   receiverSwitchSent = true;
   notice('Mode-switch sequence sent; connection is unconfirmed. Choose the BeiTong configuration HID to read its map.');
+}
+$('#receiver-connect').addEventListener('click', () => void run(async () => {
+  const pad = navigator.getGamepads?.()[activeGamepadIndex ?? -1];
+  if (!pad) throw new Error('Turn on the controller, press a button, and select it before connecting.');
+  await sendReceiverSwitch(pad);
 }));
+
+function startAutoConnection(pad?: Gamepad): void {
+  if (!autoConnect || busy || controller) return;
+  const session = new AbortController();
+  autoSession = session;
+  autoCheckGranted = false;
+  autoPhase = pad ? 'switching' : 'connecting';
+  void run(async () => {
+    try {
+      if (pad) {
+        activeGamepadIndex = pad.index;
+        await sendReceiverSwitch(pad, session.signal);
+        session.signal.throwIfAborted();
+        autoPhase = 'connecting'; render();
+        notice('Waiting for the receiver’s configuration connection…');
+      }
+      let device = await waitForGrantedReceiver(navigator.hid, session.signal);
+      // Use any remaining click/keyboard activation before it expires. A gamepad
+      // press alone does not grant permission to display a browser chooser.
+      if (!device && pad && !navigator.userActivation?.isActive) device = await waitForGrantedReceiver(navigator.hid, session.signal, 2500);
+      if (device) await openConfiguration(device, session.signal);
+      else if (pad) {
+        autoPhase = 'permission';
+        if (navigator.userActivation?.isActive) {
+          notice('Select the receiver in the browser’s device chooser.');
+          try { await chooseConfiguration(session.signal); }
+          catch (error) {
+            if (!(error instanceof DOMException && ['SecurityError', 'NotAllowedError'].includes(error.name))) throw error;
+            notice('The browser requires a fresh click. Choose HID to connect the receiver.');
+          }
+        } else notice('Receiver switch sent. Click Choose HID, then select the receiver in the popup. A controller button cannot grant browser permission.');
+      }
+    } catch (error) {
+      if (session.signal.aborted) return;
+      autoPhase = 'permission';
+      throw error;
+    } finally {
+      if (autoSession === session) {
+        autoSession = undefined;
+        if (autoPhase !== 'permission') autoPhase = 'idle';
+      }
+    }
+  }).then(() => {
+    if (autoConnect && autoPhase === 'permission' && !controller) $('#hid-connect').focus({ preventScroll: true });
+  });
+}
+$('#auto-connect').addEventListener('change', () => {
+  autoConnect = $<HTMLInputElement>('#auto-connect').checked;
+  autoSession?.abort();
+  autoPhase = 'idle';
+  autoCheckGranted = autoConnect;
+  autoTrigger.reset();
+  notice(autoConnect ? 'Auto connect is on. Press a controller button to connect.' : 'Auto connect is off. Use the connection buttons.');
+  render();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && autoSession) {
+    autoSession.abort(); autoPhase = 'idle';
+    notice('Auto connect paused. Return to this tab and press a controller button.');
+    render();
+  }
+});
 $('#read').addEventListener('click', () => void run(async () => {
   if (!controller) return;
   saveAcknowledged = false;
@@ -402,6 +491,10 @@ $('#apply').addEventListener('click', () => void run(async () => {
   notice('Save acknowledged; readback matches. Power-cycle the controller and test the layout.');
 }));
 async function disconnect(): Promise<void> {
+  autoSession?.abort();
+  autoTrigger.reset();
+  autoPhase = 'idle';
+  autoCheckGranted = false;
   const previous = controller; controller = undefined; snapshot = undefined;
   advancedSnapshot = undefined; advancedDraft = {}; advancedContext = ''; advancedSaved = false;
   receiverSwitchSent = false; saveAcknowledged = false;
@@ -413,6 +506,9 @@ async function disconnect(): Promise<void> {
 $('#disconnect').addEventListener('click', () => void run(async () => { await disconnect(); notice('Disconnected. Reconnect the receiver to return to Xbox mode if needed.'); }));
 if ('hid' in navigator) navigator.hid.addEventListener('disconnect', event => {
   if (controller?.device === event.device) void disconnect().then(() => notice('Controller disconnected. Reconnect and read settings before applying.', true));
+});
+if ('hid' in navigator) navigator.hid.addEventListener('connect', () => {
+  if (autoConnect && !controller && !autoSession) autoCheckGranted = true;
 });
 
 const inputSelector = document.createElement('select');
@@ -426,6 +522,11 @@ let gamepadSignature: string | undefined;
 function pollInput(): void {
   if (!document.hidden) {
     const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad): pad is Gamepad => Boolean(pad));
+    if (autoConnect && !busy && !controller) {
+      const pressedReceiver = autoTrigger.poll(pads);
+      if (pressedReceiver) startAutoConnection(pressedReceiver);
+      else if (autoCheckGranted) startAutoConnection();
+    }
     const signature = `${controller ? 'hid|' : ''}${pads.map(p => `${p.index}:${p.id}`).join('|')}`;
     if (signature !== gamepadSignature) {
       gamepadSignature = signature; inputSelector.replaceChildren();
