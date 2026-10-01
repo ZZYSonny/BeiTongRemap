@@ -66,7 +66,7 @@ If opening still fails, inspect the relevant `/dev/hidraw*` ACL and Chrome's `ch
 - Button-to-button or stick-direction assignments, disabled buttons, and default mappings.
 - Preservation of existing macros and the 12 sensor entries in 33-byte models; macro editing is outside this version's scope.
 - Local drafts, strict JSON imports/exports, and raw pre-write backup. Export captures the visible button layout, including assignments read from the controller; existing macro/unknown entries are omitted from portable profiles and preserved in the raw backup.
-- Live standard Gamepad API button highlights and joystick positions rendered directly on the controller, multiple-controller selection, and hot unplug handling.
+- Live standard Gamepad API button highlights, joystick positions, and LT/RT sizes proportional to trigger pressure rendered directly on the controller, multiple-controller selection, and hot unplug handling.
 - A single-screen editor with no page or panel scrolling. Choose physical buttons on the diagram or with the button dropdown; short phone screens use the dropdown alone.
 - Active onboard slot detection. The editor does not switch slots, edit response curves/macros/sensors, update firmware, or run calibration. Remap leaves advanced settings untouched; Advanced preserves mappings and fields outside the chosen edits.
 

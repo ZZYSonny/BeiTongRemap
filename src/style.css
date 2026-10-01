@@ -56,7 +56,7 @@ main { width: 100%; max-width: 1320px; margin: 0 auto; min-height: 0; flex: 1; d
 .heading-tools { display: flex; align-items: center; gap: 8px; }
 #read { font-size: 10px; padding: 5px 8px; }
 .controller-view { flex: 1; min-height: 0; display: grid; place-items: center; container-type: size; }
-.controller-stage { position: relative; width: min(100cqw, calc(100cqh * 4 / 3)); aspect-ratio: 4 / 3; container-type: inline-size; background: radial-gradient(ellipse, #2c3830, transparent 70%); }
+.controller-stage { position: relative; width: min(100cqw, calc(100cqh * 600 / 430)); aspect-ratio: 600 / 430; container-type: inline-size; background: radial-gradient(ellipse, #2c3830, transparent 70%); }
 .controller-shape { position: absolute; width: 100%; height: 100%; filter: drop-shadow(0 12px 10px #080a0a); }
 .pad-button { position: absolute; transform: translate(-50%, -50%); width: 7%; aspect-ratio: 1; padding: 0; display: grid; place-items: center; border-radius: 50%; border: 2px solid #141b17; background: linear-gradient(#343e38, #1a211c); box-shadow: 0 3px 4px #101510; font-size: clamp(7px, 2cqw, 13px); font-weight: 700; color: #c3cecb; }
 .pad-button:hover, .pad-button.selected { border-color: var(--accent); color: var(--accent); background: #283e2a; }
@@ -67,7 +67,8 @@ main { width: 100%; max-width: 1320px; margin: 0 auto; min-height: 0; flex: 1; d
 .stick-cap { position: absolute; inset: 20%; display: grid; place-items: center; border-radius: 50%; background: linear-gradient(#424f44, #263028); border: 1px solid #58695a; box-shadow: 0 3px 5px #0a100c; pointer-events: none; }
 .pad-button.pressed .stick-cap { background: var(--accent); color: #18251b; }
 .key-LB, .key-RB, .key-LT, .key-RT { width: 14%; aspect-ratio: 3.4; border-radius: 6px; font-size: clamp(7px, 1.7cqw, 11px); }
-.key-Up, .key-Down, .key-Left, .key-Right { width: 5.5%; border-radius: 4px; }
+.key-LT, .key-RT { aspect-ratio: auto; height: calc(4cqw * (1 + var(--trigger-pressure, 0))); }
+.key-Up, .key-Down, .key-Left, .key-Right { width: 4.5%; border-radius: 4px; }
 .key-Back, .key-Start, .key-Turbo, .key-Shift { width: 5%; font-size: clamp(6px, 1.5cqw, 9px); }
 .key-Turbo, .key-Shift { width: 6%; font-size: clamp(4px, 1.4cqw, 9px); }
 .key-Home { width: 6%; }

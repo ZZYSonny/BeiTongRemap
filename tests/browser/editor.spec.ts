@@ -20,6 +20,25 @@ async function expectNoScrolling(page: Page): Promise<void> {
   expect(layout).toEqual({ clippedControls: [], overflow: [], pageFits: true });
 }
 
+async function expectControlsOnShell(page: Page): Promise<void> {
+  const outside = await page.evaluate(() => {
+    const shell = document.querySelector<SVGPathElement>('.controller-shape > path')!;
+    const matrix = shell.getScreenCTM();
+    if (!matrix || !shell.getBoundingClientRect().width) return [];
+    const inverse = matrix.inverse();
+    const keys = ['LS', 'RS', 'A', 'B', 'X', 'Y'];
+    return keys.filter(key => {
+      const rect = document.querySelector(`.key-${key}`)!.getBoundingClientRect();
+      // Test the rendered circular outline against the actual shell, not its bounding box.
+      return Array.from({ length: 32 }, (_, i) => i * Math.PI / 16).some(angle => {
+        const point = new DOMPoint(rect.left + rect.width / 2 + Math.cos(angle) * rect.width / 2, rect.top + rect.height / 2 + Math.sin(angle) * rect.height / 2).matrixTransform(inverse);
+        return !shell.isPointInFill(point);
+      });
+    });
+  });
+  expect(outside).toEqual([]);
+}
+
 test('editor maps buttons, persists drafts, imports profiles, and explains offline writes', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
@@ -104,6 +123,76 @@ test('controller stick caps follow selected gamepad axes and reset when input di
   await expect(page.getByRole('button', { name: 'Map LS', exact: true })).not.toHaveClass(/pressed/);
 });
 
+test('triggers grow independently with analog pressure and reset for unavailable input', async ({ page }) => {
+  await page.addInitScript(() => {
+    const pads = [
+      { index: 0, id: 'BEITONG A1N3 XINPUT', mapping: 'standard', axes: [0, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ value: 0, pressed: false })) },
+      { index: 1, id: 'Second gamepad', mapping: 'standard', axes: [], buttons: Array.from({ length: 17 }, (_, i) => ({ value: i === 6 ? 1 : 0, pressed: i === 6 })) },
+    ];
+    Object.assign(window, { triggerTestPads: pads });
+    Object.defineProperty(navigator, 'getGamepads', { value: () => pads, configurable: true });
+  });
+  await page.goto('/');
+  const sizes = () => page.evaluate(() => ['LT', 'RT'].map(key => {
+    const rect = document.querySelector(`.key-${key}`)!.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }));
+  const base = await sizes();
+  const growth = async () => (await sizes()).map((size, i) => Math.round(size.height / base[i].height * 100) / 100);
+  await page.evaluate(() => {
+    const pads = (window as unknown as { triggerTestPads: { buttons: { value: number; pressed: boolean }[] }[] }).triggerTestPads;
+    pads[0].buttons[6].value = 0.25;
+    pads[0].buttons[7] = { value: 1, pressed: true };
+  });
+  await expect.poll(growth).toEqual([1.25, 2]);
+  expect((await sizes()).map(size => size.width)).toEqual(base.map(size => size.width));
+  await expect(page.getByRole('button', { name: 'Map LT', exact: true })).not.toHaveClass(/pressed/);
+  await expect(page.getByRole('button', { name: 'Map RT', exact: true })).toHaveClass(/pressed/);
+  await page.getByRole('button', { name: 'Map RT', exact: true }).click();
+  await expect(page.getByLabel('Physical button')).toHaveValue('RT');
+  await expectNoScrolling(page);
+  await page.getByLabel('Live input controller').selectOption('1');
+  await expect.poll(growth).toEqual([2, 1]);
+  await page.evaluate(() => {
+    const pads = (window as unknown as { triggerTestPads: { buttons: { value: number }[]; mapping: string }[] }).triggerTestPads;
+    pads[1].mapping = '';
+  });
+  await expect.poll(growth).toEqual([1, 1]);
+  await page.evaluate(() => {
+    const pads = (window as unknown as { triggerTestPads: { buttons: { value: number }[]; mapping: string }[] }).triggerTestPads;
+    pads[1].mapping = 'standard';
+    pads[1].buttons[6].value = NaN;
+    pads[1].buttons[7].value = Infinity;
+  });
+  await expect.poll(growth).toEqual([1, 1]);
+  await page.evaluate(() => {
+    const pads = (window as unknown as { triggerTestPads: { buttons: { value: number }[] }[] }).triggerTestPads;
+    pads[1].buttons[6].value = -1;
+    pads[1].buttons[7].value = 2;
+  });
+  await expect.poll(growth).toEqual([1, 2]);
+  for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport);
+    await expectNoScrolling(page);
+    await expectControlsOnShell(page);
+    const geometry = await page.evaluate(() => {
+      const lt = document.querySelector('.key-LT')!.getBoundingClientRect();
+      const rt = document.querySelector('.key-RT')!.getBoundingClientRect();
+      const stage = document.querySelector('.controller-stage')!.getBoundingClientRect();
+      const lb = document.querySelector('.key-LB')!.getBoundingClientRect();
+      const rb = document.querySelector('.key-RB')!.getBoundingClientRect();
+      return { growth: Math.round(rt.height / lt.height * 100) / 100, fits: lt.top >= stage.top && rt.top >= stage.top && lt.bottom < lb.top && rt.bottom < rb.top };
+    });
+    expect(geometry).toEqual({ growth: 2, fits: true });
+  }
+  await page.evaluate(() => (window as unknown as { triggerTestPads: unknown[] }).triggerTestPads.splice(0));
+  await expect.poll(async () => {
+    const [lt, rt] = await sizes();
+    return Math.round(rt.height / lt.height * 100) / 100;
+  }).toBe(1);
+  await expect(page.getByRole('button', { name: 'Map LT', exact: true })).not.toHaveClass(/pressed/);
+});
+
 for (const viewport of [
   { width: 1440, height: 900 }, { width: 1280, height: 720 },
   { width: 1024, height: 600 }, { width: 768, height: 1024 },
@@ -114,6 +203,7 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await page.goto('/');
     await expectNoScrolling(page);
+    await expectControlsOnShell(page);
     await page.getByRole('button', { name: 'Connect receiver' }).click();
     await expect(page.locator('#notice')).toContainText('Turn on the controller');
     await expectNoScrolling(page);

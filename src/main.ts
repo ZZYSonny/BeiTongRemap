@@ -69,22 +69,27 @@ $('#app').innerHTML = `
     </section>
   </main>`;
 
+// Use the shell's 600 × 430 coordinates for every control.
 const positions: Record<SourceKey, [number, number]> = {
-  LT: [23, 7], RT: [77, 7], LB: [23, 20], RB: [77, 20],
-  LS: [26, 43], RS: [62, 61], A: [77, 51], B: [85, 40], X: [69, 40], Y: [77, 29],
-  Up: [36, 57], Down: [36, 73], Left: [30, 65], Right: [42, 65],
-  Back: [43, 39], Start: [57, 39], Home: [50, 30], Turbo: [43, 49], Shift: [57, 49], M1: [18, 83], M2: [82, 83],
+  LT: [166, 52], RT: [434, 52], LB: [166, 104], RB: [434, 104],
+  LS: [168, 177], RS: [361, 257], A: [430, 223], B: [470, 183], X: [390, 183], Y: [430, 143],
+  Up: [215, 232], Down: [215, 288], Left: [187, 260], Right: [243, 260],
+  Back: [258, 172], Start: [342, 172], Home: [300, 133], Turbo: [265, 219], Shift: [307, 219], M1: [110, 365], M2: [490, 365],
 };
 const glyphs: Partial<Record<SourceKey, string>> = { Up: '↑', Down: '↓', Left: '←', Right: '→', Back: '▱', Start: '☰', Home: 'b' };
 $('#controller-buttons').innerHTML = SOURCE_KEYS.map(key => {
   const [x, y] = positions[key];
   const content = key === 'LS' || key === 'RS' ? `<span class="stick-cap" aria-hidden="true">${key}</span>` : glyphs[key] ?? key;
-  return `<button class="pad-button key-${key}" data-key="${key}" style="left:${x}%;top:${y}%" aria-label="Map ${key}">${content}</button>`;
+  return `<button class="pad-button key-${key}" data-key="${key}" style="left:${x / 600 * 100}%;top:${y / 430 * 100}%" aria-label="Map ${key}">${content}</button>`;
 }).join('');
 const gamepadKeys: SourceKey[] = ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'Back', 'Start', 'LS', 'RS', 'Up', 'Down', 'Left', 'Right', 'Home'];
 const liveSticks = [
   { cap: $('.key-LS .stick-cap'), axis: 0 },
   { cap: $('.key-RS .stick-cap'), axis: 2 },
+];
+const liveTriggers = [
+  { button: $('.key-LT'), index: 6 },
+  { button: $('.key-RT'), index: 7 },
 ];
 
 function notice(message: string, error = false): void {
@@ -437,6 +442,11 @@ function pollInput(): void {
     for (const { cap, axis } of liveSticks) {
       const transform = `translate(${axisValue(axis) * 25}%, ${axisValue(axis + 1) * 25}%)`;
       if (cap.style.transform !== transform) cap.style.transform = transform;
+    }
+    for (const { button, index } of liveTriggers) {
+      const value = pad?.mapping === 'standard' ? pad.buttons[index]?.value : 0;
+      const pressure = String(typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0);
+      if (button.style.getPropertyValue('--trigger-pressure') !== pressure) button.style.setProperty('--trigger-pressure', pressure);
     }
   }
   requestAnimationFrame(pollInput);
