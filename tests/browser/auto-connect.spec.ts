@@ -151,15 +151,15 @@ test('auto mode defaults on, can show the three manual buttons, and only reacts 
   await expect(toggle).toBeChecked();
 });
 
-test('disconnect stays visible in auto mode, requests XInput and pauses automatic reconnect', async ({ page }) => {
+test('disconnect stays visible in auto mode, requests XInput and turns automatic reconnect off', async ({ page }) => {
   const toggle = page.getByLabel('Auto connect', { exact: true });
   await toggle.check();
   await expect(page.locator('#connection-status')).toHaveText('Auto ready');
   await setState(page, { pressed: true });
   await expect(page.locator('#disconnect')).toBeEnabled();
   await page.locator('#disconnect').click();
-  await expect(toggle).toBeChecked();
-  await expect(page.locator('#connection-status')).toHaveText('Auto paused');
+  await expect(toggle).not.toBeChecked();
+  await expect(page.locator('#connection-status')).toHaveText('Input only');
   await expect(page.locator('#notice')).toContainText('XInput gamepad detected');
   await expect(page.locator('#disconnect')).toBeVisible();
   await expect(page.locator('#disconnect')).toBeDisabled();
@@ -170,7 +170,6 @@ test('disconnect stays visible in auto mode, requests XInput and pauses automati
   expect(result.commands).toEqual([0x10, 0x22, 0x80, 0x80]);
   expect(result.rumble.length).toBe(14);
   expect(result.closes).toBe(1);
-  await toggle.uncheck();
   await toggle.check();
   await expect(page.locator('#connection-status')).toHaveText('Connected');
   expect(await page.evaluate(() => window.autoTest.rumble.length)).toBe(28);
@@ -183,7 +182,8 @@ for (const failExitAt of [1, 2]) test(`XInput return succeeds when exit write ${
   await page.locator('#disconnect').click();
   await expect(page.locator('#notice')).toContainText('XInput gamepad detected');
   await expect(page.locator('#notice')).not.toHaveClass(/error/);
-  await expect(page.locator('#connection-status')).toHaveText('Auto paused');
+  await expect(page.getByLabel('Auto connect', { exact: true })).not.toBeChecked();
+  await expect(page.locator('#connection-status')).toHaveText('Input only');
   expect(await page.evaluate(() => window.autoTest.exitRequests)).toBe(failExitAt);
   expect(await page.evaluate(() => window.autoTest.closes)).toBe(1);
 });

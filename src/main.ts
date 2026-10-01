@@ -27,7 +27,6 @@ let saveAcknowledged = false;
 let activeGamepadIndex: number | undefined;
 let inputSource: 'gamepad' | 'hid' = 'gamepad';
 let autoConnect = 'hid' in navigator && isSecureContext;
-let autoPaused = false;
 let autoPhase: 'idle' | 'switching' | 'connecting' | 'permission' = 'idle';
 let autoSession: AbortController | undefined;
 let autoCheckGranted = autoConnect;
@@ -143,7 +142,7 @@ function render(): void {
     state = 'Working…'; detail = 'Waiting for the controller operation to finish.';
   } else if (!controller) {
     state = 'Configuration required';
-    detail = autoConnect && autoPaused ? 'Toggle Auto connect off and on to reconnect.' : autoConnect && autoPhase !== 'permission' ? 'Press a controller button to connect.' : receiverSwitchSent ? 'Choose HID to read the onboard map.' : 'Connect receiver, then choose HID.';
+    detail = autoConnect && autoPhase !== 'permission' ? 'Press a controller button to connect.' : receiverSwitchSent ? 'Choose HID to read the onboard map.' : 'Connect receiver, then choose HID.';
   } else if (!snapshot) {
     state = 'Read required'; detail = 'Click Read before applying changes.';
   } else if (saveAcknowledged && changed === 0) {
@@ -172,7 +171,7 @@ function render(): void {
   $<HTMLButtonElement>('#import').disabled = busy;
   $<HTMLSelectElement>('#source').disabled = busy;
   document.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach(button => { button.disabled = busy; });
-  $('#connection-status').textContent = controller ? snapshot ? 'Connected' : 'Read required' : autoConnect && autoPaused ? 'Auto paused' : autoConnect && (autoPhase === 'switching' || autoPhase === 'connecting') ? 'Connecting' : autoConnect && autoPhase === 'permission' ? 'Choose HID' : autoConnect ? 'Auto ready' : receiverSwitchSent ? 'Choose HID' : liveInputAvailable ? 'Input only' : 'Not connected';
+  $('#connection-status').textContent = controller ? snapshot ? 'Connected' : 'Read required' : autoConnect && (autoPhase === 'switching' || autoPhase === 'connecting') ? 'Connecting' : autoConnect && autoPhase === 'permission' ? 'Choose HID' : autoConnect ? 'Auto ready' : receiverSwitchSent ? 'Choose HID' : liveInputAvailable ? 'Input only' : 'Not connected';
   $('#connection-status').classList.toggle('connected', Boolean(controller && snapshot));
   $('#slot-label').textContent = snapshot ? `Onboard slot ${snapshot.slot}` : 'Onboard slot —';
   renderAdvanced();
@@ -413,7 +412,7 @@ $('#receiver-connect').addEventListener('click', () => void run(async () => {
 }));
 
 function startAutoConnection(pad?: Gamepad): void {
-  if (!autoConnect || autoPaused || busy || controller) return;
+  if (!autoConnect || busy || controller) return;
   const session = new AbortController();
   autoSession = session;
   autoCheckGranted = false;
@@ -459,7 +458,6 @@ function startAutoConnection(pad?: Gamepad): void {
 }
 $('#auto-connect').addEventListener('change', () => {
   autoConnect = $<HTMLInputElement>('#auto-connect').checked;
-  autoPaused = false;
   autoSession?.abort();
   autoPhase = 'idle';
   autoCheckGranted = autoConnect;
@@ -495,7 +493,7 @@ $('#apply').addEventListener('click', () => void run(async () => {
 }));
 async function disconnect(exitConfiguration = false): Promise<ReceiverExit | undefined> {
   autoSession?.abort();
-  if (exitConfiguration && autoConnect) autoPaused = true;
+  if (exitConfiguration) autoConnect = false;
   autoTrigger.reset();
   autoPhase = 'idle';
   autoCheckGranted = false;
@@ -522,13 +520,13 @@ $('#disconnect').addEventListener('click', () => void run(async () => {
   const message = result === 'xinput' ? 'Disconnected. XInput gamepad detected.'
     : result === 'removed' ? 'Configuration interface disconnected. Press a controller button to check XInput.'
     : result === 'requested' ? 'XInput return requested. Press a controller button to check game input.' : 'Disconnected.';
-  notice(`${message}${autoConnect ? ' Auto connect paused; toggle it off and on to reconnect.' : ''}`);
+  notice(message);
 }));
 if ('hid' in navigator) navigator.hid.addEventListener('disconnect', event => {
   if (controller?.device === event.device) void disconnect().then(() => notice('Controller disconnected. Reconnect and read settings before applying.', true));
 });
 if ('hid' in navigator) navigator.hid.addEventListener('connect', () => {
-  if (autoConnect && !autoPaused && !controller && !autoSession) autoCheckGranted = true;
+  if (autoConnect && !controller && !autoSession) autoCheckGranted = true;
 });
 
 const inputSelector = document.createElement('select');
@@ -542,7 +540,7 @@ let gamepadSignature: string | undefined;
 function pollInput(): void {
   if (!document.hidden) {
     const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad): pad is Gamepad => Boolean(pad));
-    if (autoConnect && !autoPaused && !busy && !controller) {
+    if (autoConnect && !busy && !controller) {
       const pressedReceiver = autoTrigger.poll(pads);
       if (pressedReceiver) startAutoConnection(pressedReceiver);
       else if (autoCheckGranted) startAutoConnection();
