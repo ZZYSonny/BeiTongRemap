@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local vendor files and research artifacts
+.research/
+betopgame/
+
+# Local test output
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# Logs and local configuration
+*.log
+.env
+.env.*
+!.env.example
+*.local
+
+# OS metadata
+.DS_Store
+Thumbs.db

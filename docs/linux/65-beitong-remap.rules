@@ -1,0 +1,7 @@
+# Grant the active local desktop user access to supported BeiTong configuration HIDs.
+# Run before systemd's 73-seat-late.rules applies the uaccess ACL.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="20bc", ATTRS{idProduct}=="504c", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="20bc", ATTRS{idProduct}=="505b", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="20bc", ATTRS{idProduct}=="505c", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="20bc", ATTRS{idProduct}=="507e", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="20bc", ATTRS{idProduct}=="507f", TAG+="uaccess"
